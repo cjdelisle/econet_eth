@@ -196,7 +196,7 @@ static void mtk_mdio_cleanup(struct mtk_eth *eth)
 	if (!eth->mii_bus)
 		return;
 
-	mdiobus_unregister(eth->mii_bus);
+	// mdiobus_unregister(eth->mii_bus);
 }
 
 static int en75_set_mac_address(struct net_device *dev, void *p)
