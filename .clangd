@@ -1,0 +1,2 @@
+CompileFlags:
+    Remove: [-fno-allow-store-data-races, -fconserve-stack, -femit-struct-debug-baseonly]
