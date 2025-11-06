@@ -199,38 +199,41 @@ static void mtk_mdio_cleanup(struct mtk_eth *eth)
 	// mdiobus_unregister(eth->mii_bus);
 }
 
+static void en75_set_mac_hw(struct net_device *dev)
+{
+	struct mtk_mac *mac = netdev_priv(dev);
+	const char *macaddr = dev->dev_addr;
+	struct mtk_eth *eth = mac->hw;
+	u32 maclw, machw;
+
+	machw = macaddr[0]<<8  | macaddr[1]<<0;
+	maclw = macaddr[2]<<24 | macaddr[3]<<16 |
+	        macaddr[4]<<8  | macaddr[5]<<0;
+
+	spin_lock_bh(&mac->hw->page_lock);
+
+	mtk_w32(eth, maclw, GDMA1_MAC_ADRL);
+	mtk_w32(eth, machw, GDMA1_MAC_ADRH);
+
+	/* fill in switch's MAC address */
+	mtk_w32(eth, maclw, GSW_SMACCR0);
+	mtk_w32(eth, machw, GSW_SMACCR1);
+
+	spin_unlock_bh(&mac->hw->page_lock);
+}
+
 static int en75_set_mac_address(struct net_device *dev, void *p)
 {
-	int ret = eth_mac_addr(dev, p);
 	struct mtk_mac *mac = netdev_priv(dev);
-	struct mtk_eth *eth = mac->hw;
-	const char *macaddr = dev->dev_addr;
-	
+	int ret = eth_mac_addr(dev, p);
+
 	if (ret)
 		return ret;
 
 	if (unlikely(test_bit(MTK_RESETTING, &mac->hw->state)))
 		return -EBUSY;
 
-	spin_lock_bh(&mac->hw->page_lock);
-
-	mtk_w32(eth,
-		macaddr[2]<<24 | macaddr[3]<<16 |
-		macaddr[4]<<8  | macaddr[5]<<0,
-		GDMA1_MAC_ADRL);
-	mtk_w32(eth,
-		macaddr[0]<<8  | macaddr[1]<<0,
-		GDMA1_MAC_ADRH);
-
-	/* fill in switch's MAC address */
-	mtk_w32(eth,
-		macaddr[2]<<24 | macaddr[3]<<16 |
-                macaddr[4]<<8  | macaddr[5]<<0, GSW_SMACCR0);
-	mtk_w32(eth,
-		macaddr[0]<<8  | macaddr[1]<<0, GSW_SMACCR1);
-
-	spin_unlock_bh(&mac->hw->page_lock);
-
+	en75_set_mac_hw(dev);
 	return 0;
 }
 
@@ -825,24 +828,31 @@ static int mtk_hw_deinit(struct mtk_eth *eth)
 	return 0;
 }
 
-static int __init mtk_init(struct net_device *dev)
+static int en75_init(struct net_device *dev)
 {
 	struct mtk_mac *mac = netdev_priv(dev);
 	struct mtk_eth *eth = mac->hw;
-	const char mac_addr[6] = {16, 163, 184, 106, 1, 8};
+	char mac_addr[ETH_ALEN];
 
-	// mac_addr = of_get_mac_address(mac->of_node);
-	// if (!IS_ERR(mac_addr))
-	dev_addr_set(dev, mac_addr);
-	// ether_addr_copy((u8 *)dev->dev_addr, mac_addr);
-
-	/* If the mac address is invalid, use random mac address  */
-	if (!is_valid_ether_addr(dev->dev_addr)) {
+	if (of_get_mac_address(mac->of_node, mac_addr)) {
 		eth_hw_addr_random(dev);
-		dev_err(eth->dev, "generated random MAC address %pM\n",
-			dev->dev_addr);
+		dev_info(eth->dev, "%s using random mac %pM\n",
+			dev->name, dev->dev_addr);
+		return 0;
 	}
 
+	if (is_valid_ether_addr(mac_addr)) {
+		dev_info(eth->dev, "%s using DT mac %pM\n",
+			dev->name, mac_addr);
+		dev_addr_set(dev, mac_addr);
+		return 0;
+	}
+
+	eth_hw_addr_random(dev);
+	dev_info(eth->dev, "%s invalid DT mac %pM, using random mac %pM\n",
+		dev->name, mac_addr, dev->dev_addr);
+
+	en75_set_mac_hw(dev);
 	return 0;
 }
 
@@ -893,7 +903,7 @@ static int mtk_cleanup(struct mtk_eth *eth)
 }
 
 static const struct net_device_ops mtk_netdev_ops = {
-	.ndo_init		= mtk_init,
+	.ndo_init		= en75_init,
 	.ndo_uninit		= mtk_uninit,
 	.ndo_open		= mtk_open,
 	.ndo_stop		= mtk_stop,
