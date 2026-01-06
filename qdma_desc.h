@@ -302,114 +302,101 @@ static inline void set_erx_untag(struct qdma_desc_erx *x, bool v) {
 	x->bitfield_1 = FIELD_SET(x->bitfield_1, ERX_UNTAG, v);
 }
 
-/**
- * qdma_desc - QDMA Packet Descriptor, Used to communicate an RX or TX message to the hardware.
- * 
- *     3                     2                   1                   0
- *     1 0 9 8 7 6 5 4 3 2 1 0 9 8 7 6 5 4 3 2 1 0 9 8 7 6 5 4 3 2 1 0
- *    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
- *  0 |                            unknown0                           |
- *    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
- *  4 |D|O|N|         unknown1        |            pkt_len            |
- *    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
- *  8 |                            pkt_addr                           |
- *    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
- * 12 |                unknown2               |        next_idx       |
- *    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
- * 16 |                                                               |
- *    +                                                               +
- * 20 |                                                               |
- *    +                               t                               +
- * 24 |                                                               |
- *    +                                                               +
- * 28 |                                                               |
- *    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
- * 32 
- * 
- * @unknown0 (32 bit): Reserved / unused, we still export the symbol so we can
- *                     show it in debugging
- * @bitfield_0 (16 bit): 
- *   @done "D" (1 bit): Descriptor Done flag, this roughly means that the DSCP
- *                      "belongs to the driver", the hardware will set it when
- *                      it is done receiving or sending and will check to make
- *                      sure it's not touching a DSCP that is not meant for it.
- *                      This is not strictly necessary, you can determine which
- *                      packets are yours only through ring indexes and the TX
- *                      Done List, and setting and checking of this flag can be
- *                      deactivated.
- *   @dropped "O" (1 bit): Packet has been dropped
- *   @nls "N" (1 bit): Unknown meaning but used on EN761627 and EN7580
- *   @unknown1 (13 bit): Reserved / unused, we still export the symbol so we can
- *                       show it in debugging
- * @pkt_len (16 bit): Length of the packet in bytes
- * @pkt_addr (32 bit): Physical (DMA) address of the packet
- * @bitfield_1 (32 bit): 
- *   @unknown2 (bits 31..12): Reserved / unused, we still export the symbol so
- *                            we can show it in debugging
- *   @next_idx (bits 11..0): Index of the next descriptor in the ring.
- * @t (128 bit): This is either Ethernet RX, Ethernet TX, xPON RX, or xPON TX
- */
-struct qdma_desc {
+/** desc: QDMA Packet Descriptor */
+struct desc {
+	/**
+	 * desc_unknown0: Reserved / unused, we still export the symbol so we can show
+	 * it in debugging
+	 */
 	u32 unknown0;
-	u16 bitfield_0;
-	u16 pkt_len;
+
+	/** desc_info:  */
+	struct desc_info {
+		/**
+		 * See accessors:
+		 * is_desc_info_done()
+		 * set_desc_info_done()
+		 * is_desc_info_dropped()
+		 * set_desc_info_dropped()
+		 * is_desc_info_nls()
+		 * set_desc_info_nls()
+		 * get_desc_info_unknown1()
+		 * set_desc_info_unknown1()
+		 */
+		u16 bitfield_0;
+
+		/** desc_info_pkt_len: Length of the packet in bytes */
+		u16 pkt_len;
+
+	} info;
+
+	/** desc_pkt_addr: Physical (DMA) address of the packet */
 	u32 pkt_addr;
-	u32 bitfield_1;
-	union {
+
+	/** desc_next_idx: Index of the next descriptor in the ring, max 4096. */
+	u32 next_idx;
+
+	/** desc_msg: This is either Ethernet RX, Ethernet TX, xPON RX, or xPON TX */
+	union desc_msg {
 		struct qdma_desc_erx erx;
+
 		struct qdma_desc_etx etx;
+
 		u32 raw[4];
-	} t;
+
+	} msg;
+
 };
 
-/* qdma_desc bitfield_0 */
+/**
+ * Bitfield accessors for: desc_info bitfield_0
+ */
 
-#define DESC_DONE					BIT(15)
-#define DESC_DROPPED					BIT(14)
-#define DESC_NLS					BIT(13)
-#define DESC_UNKNOWN1_MASK				GENMASK(12, 0)
+#define DESC_INFO_DONE					BIT(15)
+#define DESC_INFO_DROPPED				BIT(14)
+#define DESC_INFO_NLS					BIT(13)
+#define DESC_INFO_UNKNOWN1_MASK				GENMASK(12, 0)
 
-static inline bool is_desc_done(struct qdma_desc *x) {
-	return FIELD_GET(DESC_DONE, x->bitfield_0);
+
+/**
+ * Descriptor Done flag, this roughly means that the DSCP "belongs to the
+ * driver", the hardware will set it when it is done receiving or sending and
+ * will check to make sure it's not touching a DSCP that is not meant for it.
+ * This is not strictly necessary, you can determine which packets are yours
+ * only through ring indexes and the TX Done List, and setting and checking of
+ * this flag can be deactivated.
+ */
+static inline bool is_desc_info_done(struct desc_info *x) {
+	return FIELD_GET(DESC_INFO_DONE, x->bitfield_0);
 }
-static inline void set_desc_done(struct qdma_desc *x, bool v) {
-	x->bitfield_0 = FIELD_SET(x->bitfield_0, DESC_DONE, v);
-}
-static inline bool is_desc_dropped(struct qdma_desc *x) {
-	return FIELD_GET(DESC_DROPPED, x->bitfield_0);
-}
-static inline void set_desc_dropped(struct qdma_desc *x, bool v) {
-	x->bitfield_0 = FIELD_SET(x->bitfield_0, DESC_DROPPED, v);
-}
-static inline bool is_desc_nls(struct qdma_desc *x) {
-	return FIELD_GET(DESC_NLS, x->bitfield_0);
-}
-static inline void set_desc_nls(struct qdma_desc *x, bool v) {
-	x->bitfield_0 = FIELD_SET(x->bitfield_0, DESC_NLS, v);
-}
-static inline u16 get_desc_unknown1(struct qdma_desc *x) {
-	return FIELD_GET(DESC_UNKNOWN1_MASK, x->bitfield_0);
-}
-static inline void set_desc_unknown1(struct qdma_desc *x, u16 v) {
-	x->bitfield_0 = FIELD_SET(x->bitfield_0, DESC_UNKNOWN1_MASK, v);
+static inline void set_desc_info_done(struct desc_info *x, bool v) {
+	x->bitfield_0 = FIELD_SET(x->bitfield_0, DESC_INFO_DONE, v);
 }
 
-/* qdma_desc bitfield_1 */
+/** Packet has been dropped */
+static inline bool is_desc_info_dropped(struct desc_info *x) {
+	return FIELD_GET(DESC_INFO_DROPPED, x->bitfield_0);
+}
+static inline void set_desc_info_dropped(struct desc_info *x, bool v) {
+	x->bitfield_0 = FIELD_SET(x->bitfield_0, DESC_INFO_DROPPED, v);
+}
 
-#define DESC_UNKNOWN2_MASK				GENMASK(31, 12)
-#define DESC_NEXT_IDX_MASK				GENMASK(11, 0)
+/** Unknown meaning but used on EN761627 and EN7580 */
+static inline bool is_desc_info_nls(struct desc_info *x) {
+	return FIELD_GET(DESC_INFO_NLS, x->bitfield_0);
+}
+static inline void set_desc_info_nls(struct desc_info *x, bool v) {
+	x->bitfield_0 = FIELD_SET(x->bitfield_0, DESC_INFO_NLS, v);
+}
 
-static inline u32 get_desc_unknown2(struct qdma_desc *x) {
-	return FIELD_GET(DESC_UNKNOWN2_MASK, x->bitfield_1);
+/**
+ * Reserved / unused, we still export the symbol so we can show it in debugging
+ */
+static inline u16 get_desc_info_unknown1(struct desc_info *x) {
+	return FIELD_GET(DESC_INFO_UNKNOWN1_MASK, x->bitfield_0);
 }
-static inline void set_desc_unknown2(struct qdma_desc *x, u32 v) {
-	x->bitfield_1 = FIELD_SET(x->bitfield_1, DESC_UNKNOWN2_MASK, v);
-}
-static inline u16 get_desc_next_idx(struct qdma_desc *x) {
-	return FIELD_GET(DESC_NEXT_IDX_MASK, x->bitfield_1);
-}
-static inline void set_desc_next_idx(struct qdma_desc *x, u16 v) {
-	x->bitfield_1 = FIELD_SET(x->bitfield_1, DESC_NEXT_IDX_MASK, v);
+static inline void set_desc_info_unknown1(struct desc_info *x, u16 v) {
+	x->bitfield_0 = FIELD_SET(x->bitfield_0, DESC_INFO_UNKNOWN1_MASK, v);
 }
 
 #endif /* QDMA_DESC_H */

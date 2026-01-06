@@ -88,23 +88,20 @@ static void print_etx(struct seq_file *m, struct qdma_desc_etx *etx)
 	}
 }
 
-static void print_desc(struct seq_file *m, struct qdma_desc *desc) {
+static void print_desc(struct seq_file *m, struct desc *desc) {
 	seq_printf(m, "len=%d\taddr=%.8x next=%d%s%s%s",
-		desc->pkt_len,
+		desc->info.pkt_len,
 		desc->pkt_addr,
-		get_desc_next_idx(desc),
-		is_desc_done(desc) ? " DONE" : "",
-		is_desc_dropped(desc) ? " DROPPED" : "",
-		is_desc_nls(desc) ? " NLS" : ""
+		desc->next_idx,
+		is_desc_info_done(&desc->info) ? " DONE" : "",
+		is_desc_info_dropped(&desc->info) ? " DROPPED" : "",
+		is_desc_info_nls(&desc->info) ? " NLS" : ""
 	);
 	if (desc->unknown0) {
 		seq_printf(m, " unknown0=%.8x", desc->unknown0);
 	}
-	if (get_desc_unknown1(desc)) {
-		seq_printf(m, " unknown1=%.4x", get_desc_unknown1(desc));
-	}
-	if (get_desc_unknown2(desc)) {
-		seq_printf(m, " unknown2=%.4x", get_desc_unknown2(desc));
+	if (get_desc_info_unknown1(&desc->info)) {
+		seq_printf(m, " unknown1=%.4x", get_desc_info_unknown1(&desc->info));
 	}
 }
 
@@ -121,22 +118,22 @@ static int en75_qdma_descs(struct seq_file *m, void *v)
 	seq_printf(m, "QDMA RX Descriptors driver_idx=%d hardware_idx=%d\n",
 		readl(&qchain_reg->rx_cpui), readl(&qchain_reg->rx_hwi));
 	for (i = 0; i < chain->config->rx_count; i++) {
-		struct qdma_desc *desc = &chain->config->rx_descs[i];
+		struct desc *desc = &chain->config->rx_descs[i];
 		seq_printf(m, "  %d ", i);
 		print_desc(m, desc);
 		seq_puts(m, " ");
-		print_erx(m, &desc->t.erx);
+		print_erx(m, &desc->msg.erx);
 		seq_puts(m, "\n");
 	}
 
 	seq_printf(m, "QDMA TX Descriptors driver_idx=%d hardware_idx=%d\n",
 		readl(&qchain_reg->tx_cpui), readl(&qchain_reg->tx_hwi));
 	for (i = 0; i < chain->config->tx_count; i++) {
-		struct qdma_desc *desc = &chain->config->tx_descs[i];
+		struct desc *desc = &chain->config->tx_descs[i];
 		seq_printf(m, "  %d ", i);
 		print_desc(m, desc);
 		seq_puts(m, " ");
-		print_etx(m, &desc->t.etx);
+		print_etx(m, &desc->msg.etx);
 		seq_puts(m, "\n");
 	}
 
