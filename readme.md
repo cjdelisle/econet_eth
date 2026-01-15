@@ -1,40 +1,52 @@
 # EcoNet EN751221 Ethernet Driver
 
-This is a work in progress, it's published now because it works well enough
-to provide ethernet on EcoNet devices but it is far from complete.
+This is an ethernet driver for EcoNet EN751221 devices, it is likely to be
+easily ported to EN751627 and EN7528, but it is significantly different from
+the ethernet used in EN7523, EN7580, EN7581, and EN7583. For those you should
+use airoha_eth.
 
-The EN751221 ethernet device has 2 ports, one goes to an onboard switch
-that goes to the 4 LAN ports on the device, the other one goes to either
-the fiber subsystem or else another ethernet port (in the case of a DSL
-application).
+The EcoNet Ethernet system has 32 channels, each of which has 8 queues. WRR
+prioritization can be done between queues within a channel and (to some extent)
+between channels. This driver does no QoS at the moment, but does expose all
+256 channel/queue combinations as queues to the kernel, ensuring that separate
+flows will generally get fair treatment.
 
-Currently this driver only brings up port 1 (LAN) and puts the switch into
-open forwarding mode.
+## Current status
+- Loads and unloads correctly as long as reset controller is provided
+- Sending and receiving is fast and seems to be correct
+- NAPI based
+- QDMA and GDM (port) subsystems are in separate sub-modules
+- Stats collected
+- Debugfs introspection
+- "Kernel Quality" - not much needed to be considered for upstreaming
+- 
 
 ## TODO
-- Verify that module-unloading is correct to allow rapid development by
-downloading and reloading new versions of the module
-- Rewrite the DMA ring because the way it works now will overwrite packets
-   if it loops around.
-- Fix MDIO and try to the switch working as a DSA so we can have one port
-   as a WAN and the others for LAN
-- Implement NAPI
-- Separate out the QDMA engine so that we can run two, also each QDMA has
-   2 chains (chain = 1 RX ring and 1 TX ring)
-- Add stats because they are collected
-- Enable jumbo frames because they are supported in hardware
-- Decide what QoS / NAT / ... features to make available
+- Short term:
+  - Implement DSA for the integrated MT7530 switch
+  - Send upstream to Linux for reviews
+- Medium term:
+  - Implement FlowTable offloading
+  - Implement QoS flow grouping by sender/recipient to protect users from
+    each other
+  - Integrate FlowTable offloading with QoS channel selection
+  - Implement jumbo frames over 2KB (requires shutdown/restart of QDMA on
+    change of MTU, to increase buffer sizes)
+  - EN751627 + EN7528 support
 
 ## File structure
-* Core driver which is mostly old code that needs to be updated
-  * `econet_eth1.c`
-* Old `mtk_soc_eth` based stuff which should be rewritten:
-  * `econet_eth1.h`
-* New code
-  * `econet_eth.h`
-  * `econet_eth_regs.h`
-  * `qdma_desc.h`
-  * `econet_eth_debug.c`
+* `econet_eth.c` - The main driver and entrypoint.
+* `econet_qdma.c` - Controls only the QDMA engine, is oblivious to the rest
+                    of the ethernet system. Receives and send packets.
+* `econet_port.c` - Controls the GDM (LAN or WAN) port, registers the
+                    net_device with the kernel. Has a reference to the QDMA
+		    in order to send packets.
+* `econet_eth_debug.c` - Provides debugfs introspection.
+* `econet_eth.h` - Main internal header file.
+* `qdma_desc.h` - Header file with packet descriptor for communicating with
+                  the QDMA engine.
+* `qdma_regs.h` - Struct representation of MMIO registers of QDMA engine
+* `gdm_regs.h` - Struct representation of MMIO registers of GDM port control
 
 ## How to use
 
@@ -48,10 +60,41 @@ is in a different location then you'll need to edit it.
 
 ## DeviceTree Entry
 
+First, you should have `econet,en751221-scu` for being able to reset the
+ethernet when loading and unloading the driver, otherwise it will only load
+once per reboot. See: https://github.com/openwrt/openwrt/pull/21545
+
+```c
+	chip_scu: syscon@1fa20000 {
+		compatible = "econet,en751221-chip-scu", "syscon";
+		reg = <0x1fa20000 0x388>;
+	};
+	scuclk: clock-controller@1fb00000 {
+		compatible = "econet,en751221-scu", "syscon";
+		reg = <0x1fb00000 0x970>;
+		#clock-cells = <1>;
+		#reset-cells = <1>;
+	};
+```
+
+Then add this entry to your DT:
+
 ```c
 	ethernet: ethernet@1fb50000 {
 		compatible = "econet,en751221-eth"; 
 		reg = <0x1fb50000 0x10000>;
+
+		// If you didn't include the system controller, remove
+		// these resets. You will get a warning on load and you
+		// won't be able to load the driver more than once per reboot.
+		resets = <&scuclk EN751221_FE_RST>,
+			 <&scuclk EN751221_FE_QDMA1_RST>,
+			 <&scuclk EN751221_FE_QDMA2_RST>,
+			 <&scuclk EN751221_GSW_RST>,
+			 <&scuclk EN751221_XPON_MAC_RST>,
+			 <&scuclk EN751221_XPON_PHY_RST>;
+		reset-names = "fe", "qdma0", "qdma1", "gsw",
+			      "xpon-mac", "xpon-phy";
 
 		#address-cells = <1>;
 		#size-cells = <0>;

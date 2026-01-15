@@ -111,6 +111,8 @@ struct qregs {
 	 */
 	struct hwf_cfg { u32 word; } hwf_cfg;
 
+	u32 unused_0;
+
 	/** qregs_hwf_cfg1: Hardware forwarding configuration (also called LMGR) */
 	struct qregs_hwf_cfg1 {
 		/**
@@ -133,6 +135,13 @@ struct qregs {
 
 	} hwf_cfg1;
 
+	u8 unused_1[12];
+
+	/** qregs_channel_retire: Referred to as QDMA_CSR_LMGR_CHNL_RETIRE */
+	u32 channel_retire;
+
+	u8 unused_2[12];
+
 	/**
 	 * qregs_int_status: When an interrupt is triggered, these are the pending
 	 * events
@@ -141,8 +150,6 @@ struct qregs {
 
 	/** qregs_int_enable: Enabled interrupts */
 	u32 int_enable;
-
-	u8 unused_0[32];
 
 	/** qregs_tx_int_delay: Interrupt delay for reducing interrupt load */
 	u32 tx_int_delay;
@@ -194,6 +201,69 @@ struct qregs {
 		u32 wait_time;
 
 	} done_queue;
+
+	u8 unused_3[12];
+
+	/**
+	 * See accessors:
+	 * is_qregs_wrr_mode_use_16b()
+	 * set_qregs_wrr_mode_use_16b()
+	 * is_qregs_wrr_mode_by_byte()
+	 * set_qregs_wrr_mode_by_byte()
+	 */
+	struct wrr_mode { u32 word; } wrr_mode;
+
+	u32 unused_4;
+
+	/**
+	 * qregs_wrr_weight: Read and write a WRR weight for a channel+queue pair.
+	 * Called QDMA_CSR_TXWRR_WEIGHT_CFG.
+	 */
+	struct qregs_wrr_weight {
+		/**
+		 * See accessors:
+		 * set_qregs_wrr_weight_write()
+		 * is_qregs_wrr_weight_done()
+		 * set_qregs_wrr_weight_channel()
+		 * set_qregs_wrr_weight_queue()
+		 */
+		u16 bitfield_0;
+
+		u8 unused_0;
+
+		/**
+		 * qregs_wrr_weight_value: The WRR weight to read or write for the configured
+		 * channel+queue.
+		 */
+		u8 value;
+
+	} wrr_weight;
+
+	u32 unused_5;
+
+	/**
+	 * qregs_buf_usage_cfg: Called QDMA_CSR_PSE_BUF_USAGE_CFG, a bitfield, TODO
+	 * document
+	 */
+	u32 buf_usage_cfg;
+
+	/**
+	 * qregs_tx_meter_cfg: Called QDMA_CSR_EGRESS_RATEMETER_CFG, a bitfield, TODO
+	 * document
+	 */
+	u32 tx_meter_cfg;
+
+	/**
+	 * qregs_tx_limit_cfg: Called QDMA_CSR_EGRESS_RATELIMIT_CFG, a bitfield, TODO
+	 * document
+	 */
+	u32 tx_limit_cfg;
+
+	/**
+	 * qregs_tx_limit_param: Called QDMA_CSR_RATELIMIT_PARAMETER_CFG, a bitfield,
+	 * per-channel tx rate limit, TODO document
+	 */
+	u32 tx_limit_param;
 
 	/** qregs_tx_congest_cfg:  */
 	struct qregs_tx_congest_cfg {
@@ -250,7 +320,77 @@ struct qregs {
 
 	} tx_congest_thr;
 
-	u8 unused_1[132];
+	/**
+	 * qregs_tx_per_ch_dthr: Called QDMA_CSR_TXQ_DYN_CHNLTHR_CFG, tx per-channel
+	 * dynamic threshold max/min threshold, TODO document
+	 */
+	u32 tx_per_ch_dthr;
+
+	/**
+	 * qregs_tx_per_q_dthr: Called QDMA_CSR_TXQ_DYN_QUEUETHR_CFG, tx per-queue
+	 * dynamic threshold max/min threshold, TODO document
+	 */
+	u32 tx_per_q_dthr;
+
+	/**
+	 * qregs_tx_per_q_sthr: Called QDMA_CSR_STATIC_QUEUE_THR(0..7), tx per-queue
+	 * static thresholds, if dynamic thresholds are disabled, TODO document
+	 */
+	u8 unused_6[32];
+
+	u8 unused_7[16];
+
+	/** qregs_debug:  */
+	struct qregs_debug {
+		/**
+		 * See accessors:
+		 * set_qregs_debug_mem_ctl_write()
+		 * is_qregs_debug_mem_ctl_done()
+		 * set_qregs_debug_mem_ctl_dataset()
+		 * set_qregs_debug_mem_ctl_word_of_elem()
+		 * set_qregs_debug_mem_ctl_elem()
+		 */
+		struct mem_ctl { u32 word; } mem_ctl;
+
+		/**
+		 * qregs_debug_mem_lo: Read or write the low bits of a memory element (use
+		 * with mem_ctl) Called QDMA_CSR_DBG_MEM_XS_DATA_LO.
+		 */
+		u32 mem_lo;
+
+		/**
+		 * qregs_debug_mem_hi: Read or write the high bits of a memory element (use
+		 * with mem_ctl) Called QDMA_CSR_DBG_MEM_XS_DATA_HI. Not used in practice.
+		 */
+		u32 mem_hi;
+
+		u32 unused_0;
+
+		/**
+		 * qregs_debug_hwf_desc_free: Called QDMA_CSR_DBG_LMGR_STATUS, number of free
+		 * hardware forwarding descriptors
+		 */
+		u32 hwf_desc_free;
+
+		/**
+		 * qregs_debug_hwd_buf_used: Number of bytes of buffer used for hardwre
+		 * forwarding
+		 */
+		u32 hwd_buf_used;
+
+		/**
+		 * qregs_debug_probe_lo: Called QDMA_CSR_DBG_QDMA_PROBE_LO, unknown usage,
+		 * TODO document
+		 */
+		u32 probe_lo;
+
+		/**
+		 * qregs_debug_probe_hi: Called QDMA_CSR_DBG_QDMA_PROBE_HI, unknown usage,
+		 * TODO document
+		 */
+		u32 probe_hi;
+
+	} debug;
 
 	/** qregs_rxring_size:  */
 	struct qregs_rxring_size {
@@ -281,10 +421,70 @@ struct qregs {
 	/** qregs_qchain1:  */
 	struct qchain_regs qchain1;
 
-	u8 unused_2[108];
+	/** qregs_cpu_rx_limit: CPU protection RX limit, TODO document */
+	u32 cpu_rx_limit;
 
-	/** qregs_end_word:  */
-	u32 end_word;
+	/** qregs_cpu_rx_limit_val: CPU protection RX limit, TODO document */
+	u32 cpu_rx_limit_val;
+
+	u8 unused_8[20];
+
+	/** qregs_vch_wrr: Virtual channel WRR weighting, TODO document */
+	u32 vch_wrr;
+
+	/** qregs_vch_qmode: Virtual channel QoS mode (WRR / SP), TODO document */
+	u32 vch_qmode;
+
+	u8 unused_9[28];
+
+	/**
+	 * qregs_ch_lim_en: Per-channel rate-limit enable, each bit corriponds to one
+	 * channel
+	 */
+	u32 ch_lim_en;
+
+	u8 unused_10[28];
+
+	/**
+	 * qregs_ch_qmode: Per-channel queue prioritization mode (WRR / SP), TODO
+	 * document
+	 */
+	u8 unused_11[16];
+
+	u8 unused_12[112];
+
+	/**
+	 * qregs_ch_tx_rate: Channel data rate, each word corrisponds to 2 channels,
+	 * upper 16 bits is the odd channel number, lower 16 is the even.
+	 */
+	u8 unused_13[64];
+
+	u8 unused_14[64];
+
+	/**
+	 * qregs_ch_drop: Drop counter for normal packets, each byte corrisponds to one
+	 * of the 32 channels.
+	 */
+	u8 unused_15[32];
+
+	u8 unused_16[32];
+
+	/**
+	 * qregs_ch_dei_drop: Drop counter for Drop-Elligable (DEI) packets, each byte
+	 * corrisponds to one of the 32 channels.
+	 */
+	u8 unused_17[32];
+
+	u8 unused_18[32];
+
+	/**
+	 * qregs_pkt_ctrs: Every other word is a counter config and a counter value,
+	 * called QDMA_CSR_DBG_CNTR_CFG / QDMA_CSR_DBG_CNTR_VAR. Definitely 40
+	 * counters, possible 64. TODO document
+	 */
+	u8 unused_19[512];
+
+	u8 unused_20[2816];
 
 };
 
@@ -568,6 +768,58 @@ static inline void set_qregs_hwf_cfg1_overhead_en(struct qregs_hwf_cfg1 *x, bool
 }
 
 /**
+ * Bitfield accessors for: struct wrr_mode
+ * WRR control register, called QDMA_CSR_TXWRR_MODE_CFG.
+ */
+
+#define QREGS_WRR_MODE_USE_16B				BIT(31)
+#define QREGS_WRR_MODE_BY_BYTE				BIT(3)
+
+
+/** If enabled, weighting is based on 16 byte units, otherwise 64 byte. */
+static inline bool is_qregs_wrr_mode_use_16b(struct wrr_mode *x) {
+	return FIELD_GET(QREGS_WRR_MODE_USE_16B, x->word);
+}
+static inline void set_qregs_wrr_mode_use_16b(struct wrr_mode *x, bool v) {
+	x->word = FIELD_SET(x->word, QREGS_WRR_MODE_USE_16B, v);
+}
+
+/** If enabled, weighting is by byte, otherwise by packet. */
+static inline bool is_qregs_wrr_mode_by_byte(struct wrr_mode *x) {
+	return FIELD_GET(QREGS_WRR_MODE_BY_BYTE, x->word);
+}
+static inline void set_qregs_wrr_mode_by_byte(struct wrr_mode *x, bool v) {
+	x->word = FIELD_SET(x->word, QREGS_WRR_MODE_BY_BYTE, v);
+}
+
+/**
+ * Bitfield accessors for: qregs_wrr_weight bitfield_0
+ */
+
+#define QREGS_WRR_WEIGHT_WRITE				BIT(15)
+#define QREGS_WRR_WEIGHT_DONE				BIT(14)
+#define QREGS_WRR_WEIGHT_CHANNEL_MASK			GENMASK(7, 3)
+#define QREGS_WRR_WEIGHT_QUEUE_MASK			GENMASK(2, 0)
+
+static inline void set_qregs_wrr_weight_write(struct qregs_wrr_weight *x, bool v) {
+	x->bitfield_0 = FIELD_SET(x->bitfield_0, QREGS_WRR_WEIGHT_WRITE, v);
+}
+
+/**
+ * After performing an operation, this bit asserts from the hardware to indicate
+ * the operation is done.
+ */
+static inline bool is_qregs_wrr_weight_done(struct qregs_wrr_weight *x) {
+	return FIELD_GET(QREGS_WRR_WEIGHT_DONE, x->bitfield_0);
+}
+static inline void set_qregs_wrr_weight_channel(struct qregs_wrr_weight *x, u8 v) {
+	x->bitfield_0 = FIELD_SET(x->bitfield_0, QREGS_WRR_WEIGHT_CHANNEL_MASK, v);
+}
+static inline void set_qregs_wrr_weight_queue(struct qregs_wrr_weight *x, u8 v) {
+	x->bitfield_0 = FIELD_SET(x->bitfield_0, QREGS_WRR_WEIGHT_QUEUE_MASK, v);
+}
+
+/**
  * Bitfield accessors for: qregs_tx_congest_cfg bitfield_0
  * Configuration for TX congestion dropping
  */
@@ -699,6 +951,45 @@ static inline bool is_qregs_tx_congest_cfg_dyncong_upd_tick(struct qregs_tx_cong
 }
 static inline void set_qregs_tx_congest_cfg_dyncong_upd_tick(struct qregs_tx_congest_cfg *x, bool v) {
 	x->bitfield_0 = FIELD_SET(x->bitfield_0, QREGS_TX_CONGEST_CFG_DYNCONG_UPD_TICK, v);
+}
+
+/**
+ * Bitfield accessors for: struct mem_ctl
+ * Called QDMA_CSR_DBG_MEM_XS_CFG, used for debugging access to memory spaces.
+ */
+
+enum qregs_debug_mem_ctl_dataset {
+	QREGS_DEBUG_MEM_CTL_DATASET_DESC		= 0,
+	QREGS_DEBUG_MEM_CTL_DATASET_QUEUE		= 1,
+	QREGS_DEBUG_MEM_CTL_DATASET_QOS_WEIGHT_CTR	= 2,
+	QREGS_DEBUG_MEM_CTL_DATASET_DMA_IDX		= 3,
+	QREGS_DEBUG_MEM_CTL_DATASET_BUF_MON		= 4,
+	QREGS_DEBUG_MEM_CTL_DATASET_RL_PARAM		= 5,
+	QREGS_DEBUG_MEM_CTL_DATASET_VCH_WEIGHT		= 6,
+};
+
+#define QREGS_DEBUG_MEM_CTL_WRITE			BIT(31)
+#define QREGS_DEBUG_MEM_CTL_DONE			BIT(30)
+#define QREGS_DEBUG_MEM_CTL_DATASET_MASK		GENMASK(26, 24)
+#define QREGS_DEBUG_MEM_CTL_WORD_OF_ELEM_MASK		GENMASK(20, 16)
+#define QREGS_DEBUG_MEM_CTL_ELEM_MASK			GENMASK(15, 0)
+
+static inline void set_qregs_debug_mem_ctl_write(struct mem_ctl *x, bool v) {
+	x->word = FIELD_SET(x->word, QREGS_DEBUG_MEM_CTL_WRITE, v);
+}
+
+/** Becomes set when the command is completed */
+static inline bool is_qregs_debug_mem_ctl_done(struct mem_ctl *x) {
+	return FIELD_GET(QREGS_DEBUG_MEM_CTL_DONE, x->word);
+}
+static inline void set_qregs_debug_mem_ctl_dataset(struct mem_ctl *x, enum qregs_debug_mem_ctl_dataset v) {
+	x->word = FIELD_SET(x->word, QREGS_DEBUG_MEM_CTL_DATASET_MASK, v);
+}
+static inline void set_qregs_debug_mem_ctl_word_of_elem(struct mem_ctl *x, u8 v) {
+	x->word = FIELD_SET(x->word, QREGS_DEBUG_MEM_CTL_WORD_OF_ELEM_MASK, v);
+}
+static inline void set_qregs_debug_mem_ctl_elem(struct mem_ctl *x, u16 v) {
+	x->word = FIELD_SET(x->word, QREGS_DEBUG_MEM_CTL_ELEM_MASK, v);
 }
 
 #endif

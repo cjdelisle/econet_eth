@@ -8,352 +8,232 @@
 #include <linux/platform_device.h>
 #include <linux/of_reserved_mem.h>
 
+#include "asm-generic/int-ll64.h"
 #include "linux/bitmap.h"
 #include "linux/dev_printk.h"
+#include "linux/types.h"
 #include "qdma_desc.h"
 #include "qdma_regs.h"
 #include "econet_eth.h"
 
-
-#define AIROHA_MAX_NUM_IRQ_BANKS	1
-#define QDMA_INT_REG_MAX		1
-
-#define QDMA_FWD_DESC_SZ		16
-
-// TODO: We don't know what this is yet
-#define AIROHA_NUM_QOS_CHANNELS		4
-
-struct airoha_queue_entry_rx {
-	void *buf;
-	dma_addr_t dma_addr;
-	u16 dma_len;
+/* The non-dma part of RX packet descriptor */
+struct en75_q_rx_ent {
+	void				*buf;
+	dma_addr_t			dma_addr;
+	u16				dma_len;
 };
 
-struct airoha_queue_rx {
-	struct en75_qdma *qdma;
-
-	struct qchain_regs __iomem *qchain_regs;
-
+struct en75_q_rx {
 	/* No lock, access only in NAPI, or else when NAPI is disabled
 	 * and qdma->lock is held */
-	struct airoha_queue_entry_rx *entry;
-	struct desc *desc;
-	u16 head;
-	u16 tail;
+	struct en75_q_rx_ent		*entry;
+	struct desc			*desc;
+	u16				cpu_i;
 
-	int queued;
-	int ndesc;
-	// int free_thr;
-	int buf_size;
-
-	struct napi_struct napi;
-	struct page_pool *page_pool;
-	struct sk_buff *skb;
+	/* Not modified after init */
+	struct en75_qdma		*qdma;
+	struct qchain_regs __iomem	*qchain_regs;
+	int				ndesc;
+	int				buf_size;
+	struct napi_struct		napi;
+	struct page_pool		*page_pool;
 };
 
-struct airoha_queue_entry_tx {
-	struct sk_buff *skb;
-	dma_addr_t dma_addr;
-	u16 dma_len;
-	u16 freelist_next;
+/* The non-dma part of TX packet descriptor */
+struct en75_q_tx_ent {
+	struct sk_buff			*skb;
+	dma_addr_t			dma_addr;
+	u16				dma_len;
+	u16				freelist_next;
 };
 
-struct airoha_queue_tx {
-	struct en75_qdma *qdma;
-
-	struct qchain_regs __iomem *qchain_regs;
-
+struct en75_q_tx {
 	/* protect concurrent queue accesses
 	 * use _bh unless in napi poll */
-	spinlock_t lock_bh;
-	struct airoha_queue_entry_tx *entry;
-	struct desc *desc;
+	spinlock_t			lock_bh;
+	struct en75_q_tx_ent		*entry;
+	struct desc			*desc;
+	u32				*debug_tx_cnt;
 
-	/* The beginning of the list of free entries. */
-	u16 freelist_head;
-	u16 freelist_tail;
-	// u16 head;
-	// u16 tail;
+	/* FIFO of free entries because they complete out of order. */
+	u16				freelist_head;
+	u16				freelist_tail;
 
-	// int tqueued;
-	int ndesc;
-	// int free_thr;
-	// int buf_size;
-
-	struct napi_struct napi;
-	// struct page_pool *page_pool;
-	// struct sk_buff *skb;
+	/* Not modified after init */
+	struct en75_qdma		*qdma;
+	struct qchain_regs __iomem	*qchain_regs;
+	int				ndesc;
+	struct napi_struct		napi;
 };
 
-struct airoha_irq_bank {
-	struct en75_qdma *qdma;
-
+struct en75_irq {
 	/* protect concurrent irqmask accesses
-	 * use _irqsave unless in irq handler. */
-	spinlock_t lock_irq;
-	u32 irqmask[QDMA_INT_REG_MAX];
-	u32 __iomem *mask_reg[QDMA_INT_REG_MAX];
-	u32 __iomem *status_reg[QDMA_INT_REG_MAX];
-	int irq;
+	 * use _irqsave unless in irq handler */
+	spinlock_t 			lock_irq;
+	u32 				irqmask[QDMA_REGS_PER_IRQ];
+	u32 __iomem 			*mask_reg[QDMA_REGS_PER_IRQ];
+	u32 __iomem 			*status_reg[QDMA_REGS_PER_IRQ];
+	u32				*debug_int_cnt;
+
+	/* Not modified after init */
+	struct en75_qdma 		*qdma;
+	int 				irq;
 };
 
-struct airoha_tx_doneq {
-	struct en75_qdma *qdma;
+struct en75_tx_doneq {
+	/* No lock, access only in NAPI */
+	u32 				*q;
+	struct qregs_doneq __iomem	*regs;
 
-	struct napi_struct napi;
-
-	int size;
-	u32 *q;
+	/* Not modified after init */
+	struct en75_qdma 		*qdma;
+	int 				size;
+	struct napi_struct 		napi;
 };
 
 struct en75_qdma {
-	// struct airoha_eth *eth;
-	struct en75_eth *eth;
-	struct device *dev;
+	/* Protects regs, users, destroying */
+	struct mutex 			lock;
+	struct qregs __iomem 		*regs;
+	int 				users;
+	bool 				destroying;
 
-	int id;
+	/* Synchronized inside of the structure */
+	struct en75_irq 		irqs[QDMA_NUM_IRQS];
+	struct en75_tx_doneq 		q_tx_done[QDMA_NUM_TX_DONE];
+	struct en75_q_tx 		q_tx[QDMA_NUM_CHAINS];
+	struct en75_q_rx 		q_rx[QDMA_NUM_CHAINS];
 
-	/* Protects register accesses, used in interrupt handler. */
-	struct mutex lock;
-	struct qregs __iomem *regs;
-	/* Users and destroying are under the register lock. */
-	int users;
-	bool destroying;
-
-	void *hwf_desc;
-
-	// struct airoha_gdm_port *ports[AIROHA_MAX_NUM_GDM_PORTS];
-
-	// atomic_t users;
-
-	struct airoha_irq_bank irq_banks[AIROHA_MAX_NUM_IRQ_BANKS];
-
-	struct airoha_tx_doneq q_tx_done[AIROHA_NUM_TX_DONE];
-
-	struct airoha_queue_tx q_tx[AIROHA_NUM_TX_RING];
-	struct airoha_queue_rx q_rx[AIROHA_NUM_RX_RING];
-
-	struct net_device *napi_dev;
-
-	struct en75_qdma_cfg cfg;
+	/* Not modified after init */
+	struct en75_eth 		*eth;
+	struct device 			*dev;
+	int 				id;
+	struct fwdesc 			*hwf_desc;
+	struct net_device 		*napi_dev;
+	struct en75_qdma_cfg 		cfg;
 };
 
-static void en75_fill_rx_queue(struct airoha_queue_rx *q)
+static void en75_fill_rx_queue(struct en75_q_rx *q, u32 end_i)
 {
-	while (q->queued < q->ndesc - 1) {
-		struct airoha_queue_entry_rx *e = &q->entry[q->head];
-		struct desc *pdesc = &q->desc[q->head];
+	u32 ndesc = q->ndesc;
+	u32 cpu_i = (q->cpu_i + 1) % ndesc;
+
+	for (; cpu_i != end_i; cpu_i = (cpu_i + 1) % ndesc) {
+		struct en75_q_rx_ent *e = &q->entry[cpu_i];
+		struct desc *pdesc = &q->desc[cpu_i];
 		struct page *page;
 		int offset;
 		int i;
 
 		page = page_pool_dev_alloc_frag(q->page_pool, &offset,
 						q->buf_size);
+
 		if (!page)
 			break;
 
-		q->head = (q->head + 1) % q->ndesc;
-		q->queued++;
-
+		WARN_ON_ONCE(e->dma_addr);
 		e->buf = page_address(page) + offset;
 		e->dma_addr = page_pool_get_dma_addr(page) + offset;
 		e->dma_len = SKB_WITH_OVERHEAD(q->buf_size);
 
-		WRITE_ONCE(pdesc->info.pkt_len, e->dma_len);
+		WRITE_ONCE(pdesc->info, (struct desc_info) { .pkt_len = e->dma_len });
 		WRITE_ONCE(pdesc->pkt_addr, e->dma_addr);
-		WRITE_ONCE(pdesc->next_idx, q->head);
 		for (i = 0; i < ARRAY_SIZE(pdesc->msg.raw); i++)
 			WRITE_ONCE(pdesc->msg.raw[i], 0);
-
-		en75_wreg((u32)q->head, &q->qchain_regs->rx_cpui);
 	}
+
+	cpu_i = (cpu_i - 1) % ndesc;
+
+	q->cpu_i = cpu_i;
+	en75_wreg(cpu_i, &q->qchain_regs->rx_cpui);
 }
 
-static int airoha_qdma_rx_process(struct airoha_queue_rx *q, int budget)
+static void en75_qdma_rx_process_one(struct en75_q_rx *q, u32 cpu_i,
+				     enum dma_data_direction dir)
+{
+	struct en75_q_rx_ent *e = &q->entry[cpu_i];
+	struct sk_buff *skb;
+	struct page *page;
+	struct desc desc;
+	u32 hash;
+	u8 sport;
+	int len;
+
+	memcpy(&desc, &q->desc[cpu_i], sizeof(desc));
+
+	dma_sync_single_for_cpu(q->qdma->dev, e->dma_addr,
+				SKB_WITH_OVERHEAD(q->buf_size), dir);
+	
+	/* Not needed but a couple of WARN_ON_ONCE() check this later */
+	e->dma_addr = 0;
+
+	/* Make debug more readable */
+	WRITE_ONCE(q->desc[cpu_i].pkt_addr, 0);
+
+	len = desc.info.pkt_len;
+	if (!len || len > SKB_WITH_OVERHEAD(q->buf_size))
+		goto return_page;
+
+	if (WARN_ON_ONCE(is_desc_info_nls(&desc.info)))
+		goto return_page;
+
+	skb = napi_build_skb(e->buf, q->buf_size);
+	if (!skb)
+		goto return_page;
+
+	__skb_put(skb, len);
+	skb_mark_for_recycle(skb);
+	skb->ip_summed = CHECKSUM_UNNECESSARY;
+
+	hash = get_erx_ppe_entry(&desc.msg.erx);
+	skb_set_hash(skb, jhash_1word(hash, 0),
+		     PKT_HASH_TYPE_L4);
+
+	/* TODO: When we begin supporting the PPE, we will handle
+	 *       PPE_CPU_REASON_HIT_UNBIND_RATE_REACHED here. */
+
+	sport = get_erx_sport(&desc.msg.erx);
+	if (en75_rx_before_recv(q->qdma->eth, skb, sport))
+		dev_kfree_skb(skb);
+	else
+		napi_gro_receive(&q->napi, skb);
+
+	return;
+
+return_page:
+	page = virt_to_head_page(e->buf);
+	page_pool_put_full_page(q->page_pool, page, false);
+}
+
+static int en75_qdma_rx_process(struct en75_q_rx *q, int budget)
 {
 	enum dma_data_direction dir = page_pool_get_dma_dir(q->page_pool);
-	struct en75_qdma *qdma = q->qdma;
-	// struct airoha_eth *eth = qdma->eth;
-	int qid = q - &qdma->q_rx[0];
-	int done = 0;
+	u32 hardware_i = en75_rreg(&q->qchain_regs->rx_hwi);
+	int ndesc = q->ndesc;
+	u32 cpu_i;
+	int done;
 
-	while (done < budget) {
-		struct airoha_queue_entry_rx *e = &q->entry[q->tail];
-		struct page *page = virt_to_head_page(e->buf);
-		struct desc *pdesc = &q->desc[q->tail];
-		struct desc desc;
-		int data_len, len;
-		u32 hash; //, reason, msg1 = le32_to_cpu(desc->msg1);
-		u8 sport;
-		
-		// u32 desc_ctrl = le32_to_cpu(desc->ctrl);
-		
-		// int data_len, len, p;
-		memcpy(&desc, pdesc, sizeof(desc));
-		if (!is_desc_info_done(&desc.info))
-			break;
+	/* The stored value of cpu_i is the last entry actually handled.
+	 * Whereas hardware_i is the next entry that has not yet been received.
+	 */
+	cpu_i = (q->cpu_i + 1) % ndesc;
 
-		// if (!(desc_ctrl & QDMA_DESC_DONE_MASK))
-		// 	break;
-
-		q->tail = (q->tail + 1) % q->ndesc;
-		q->queued--;
-
-		dma_sync_single_for_cpu(qdma->dev, e->dma_addr,
-					SKB_WITH_OVERHEAD(q->buf_size), dir);
-
-		len = desc.info.pkt_len;//FIELD_GET(QDMA_DESC_LEN_MASK, desc_ctrl);
-		data_len = q->skb ? q->buf_size
-				  : SKB_WITH_OVERHEAD(q->buf_size);
-		if (!len || data_len < len)
-			goto free_frag;
-
-		// port = en75_get_sport_dev(qdma, &desc);
-		// if (!port)
-		// 	goto free_frag;
-
-		if (!q->skb) { /* first buffer */
-			q->skb = napi_build_skb(e->buf, q->buf_size);
-			if (!q->skb)
-				goto free_frag;
-
-			__skb_put(q->skb, len);
-			skb_mark_for_recycle(q->skb);
-			q->skb->ip_summed = CHECKSUM_UNNECESSARY;
-			skb_record_rx_queue(q->skb, qid);
-		} else { /* scattered frame */
-			struct skb_shared_info *shinfo = skb_shinfo(q->skb);
-			int nr_frags = shinfo->nr_frags;
-
-			if (nr_frags >= ARRAY_SIZE(shinfo->frags))
-				goto free_frag;
-
-			skb_add_rx_frag(q->skb, nr_frags, page,
-					e->buf - page_address(page), len,
-					q->buf_size);
-		}
-
-		// if (FIELD_GET(QDMA_DESC_MORE_MASK, desc_ctrl))
-		if (is_desc_info_nls(&desc.info))
-			continue;
-
-		hash = get_erx_ppe_entry(&desc.msg.erx);
-		// hash = FIELD_GET(AIROHA_RXD4_FOE_ENTRY, msg1);
-		// if (hash != AIROHA_RXD4_FOE_ENTRY)
-		skb_set_hash(q->skb, jhash_1word(hash, 0),
-				PKT_HASH_TYPE_L4);
-
-		// TODO: We're not controlling the PPE yet.
-		// get_erx_crsn(&desc.t.erx)
-		//
-		// reason = FIELD_GET(AIROHA_RXD4_PPE_CPU_REASON, msg1);
-		// if (reason == PPE_CPU_REASON_HIT_UNBIND_RATE_REACHED)
-		// 	airoha_ppe_check_skb(&eth->ppe->dev, q->skb, hash,
-		// 			     false);
-
-		sport = get_erx_sport(&desc.msg.erx);
-		if (en75_rx_before_recv(qdma->eth, q->skb, sport))
-			goto free_frag;
-
-		done++;
-		napi_gro_receive(&q->napi, q->skb);
-		q->skb = NULL;
-		continue;
-free_frag:
-		if (q->skb) {
-			dev_kfree_skb(q->skb);
-			q->skb = NULL;
-		} else {
-			page_pool_put_full_page(q->page_pool, page, true);
-		}
+	for (done = 0; done < budget && cpu_i != hardware_i; done++) {
+		en75_qdma_rx_process_one(q, cpu_i, dir);
+		cpu_i = (cpu_i + 1) % ndesc;
 	}
-	en75_fill_rx_queue(q);
+
+	en75_fill_rx_queue(q, cpu_i);
 
 	return done;
 }
 
-#define RX1_DONE_INT 	BIT(5)
-#define RX0_DONE_INT 	BIT(0)
-
-union irq_purpose {
-	struct {
-		enum irq_purpose_type {
-			IPS_INVAL = 0,
-			IPS_DONE,
-			IPS_LOW_DSCP,
-			IPS_NO_DSCP,
-
-			IPS_OVERFLOW,
-			IPS_ERR_COHERENT,
-			IPS_GPON_INT,
-			IPS_EPON_INT,
-			IPS_XPON_INT,
-		} type : 16;
-
-		/* If source is RX, TX, or DONE then chain is the number of the queue */
-		int chain : 8;
-
-		enum irq_purpose_source {
-			IPSC_RX = 1,
-			IPSC_TX,
-			IPSC_DONE,
-			IPSC_FWD,
-			IPSC_UNSPEC,
-		} source : 8;
-	};
-	u32 word;
-};
-static_assert(sizeof(union irq_purpose) == 4, "irq_purpose size");
-
-static char *irq_purpose_type_str(enum irq_purpose_type t)
-{
-	switch (t) {
-	case IPS_DONE:
-		return "DONE";
-	case IPS_LOW_DSCP:
-		return "LOW_DSCP";
-	case IPS_NO_DSCP:
-		return "NO_DSCP";
-	case IPS_OVERFLOW:
-		return "OVERFLOW";
-	case IPS_ERR_COHERENT:
-		return "ERR_COHERENT";
-	case IPS_GPON_INT:
-		return "GPON_INT";
-	case IPS_EPON_INT:
-		return "EPON_INT";
-	case IPS_XPON_INT:
-		return "XPON_INT";
-	case IPS_INVAL:
-	default:
-		return "INVAL";
-	}
-}
-
-static char *irq_purpose_source_str(enum irq_purpose_source s)
-{
-	switch (s) {
-	case IPSC_RX:
-		return "RX";
-	case IPSC_TX:
-		return "TX";
-	case IPSC_DONE:
-		return "DONE";
-	case IPSC_FWD:
-		return "FWD";
-	case IPSC_UNSPEC:
-		return "UNSPEC";
-	default:
-		return "INVAL";
-	}
-}
-
 #define IRQ_PURPOSE(t, s, c) \
-	((union irq_purpose){ .type = IPS_ ## t, .source = IPSC_ ## s, .chain = (c) })
+	((union en75_irq_purpose){ .type = IPS_ ## t, .source = IPSC_ ## s, .chain = (c) })
 
 union irq_bit {
 	struct {
-		int bank 	: 8;
+		int irq_idx 	: 8;
 		int reg_idx 	: 8;
 		int bit_idx 	: 8;
 		int _pad 	: 8;
@@ -362,7 +242,9 @@ union irq_bit {
 };
 static_assert(sizeof(union irq_bit) == 4, "irq_bit size");
 
-static const union irq_purpose EN751221_IRQ_MAP[] = {
+/* IRQ functions relevant to the EN751221 IRQ layout */
+
+static const union en75_irq_purpose EN751221_IRQ_MAP[] = {
 	[0]  = IRQ_PURPOSE(DONE,		TX,	0),
 	[1]  = IRQ_PURPOSE(DONE,		RX,	0),
 	[2]  = IRQ_PURPOSE(NO_DSCP,		TX,	0),
@@ -384,16 +266,21 @@ static const union irq_purpose EN751221_IRQ_MAP[] = {
 	[18] = IRQ_PURPOSE(XPON_INT,		UNSPEC,	-1),
 };
 
-static union irq_purpose en751221_irq_purpose(union irq_bit bit)
+static bool en751221_valid_irq_bit(union irq_bit bit)
 {
-	if (WARN_ON_ONCE(bit.bank != 0 || bit.reg_idx != 0 ||
-			 bit.bit_idx > ARRAY_SIZE(EN751221_IRQ_MAP)))
-		return (union irq_purpose){0};
+	return bit.irq_idx == 0 && bit.reg_idx == 0 &&
+		bit.bit_idx < ARRAY_SIZE(EN751221_IRQ_MAP);
+}
+
+static union en75_irq_purpose en751221_irq_purpose(union irq_bit bit)
+{
+	if (WARN_ON_ONCE(!en751221_valid_irq_bit(bit)))
+		return (union en75_irq_purpose){0};
 
 	return EN751221_IRQ_MAP[bit.bit_idx];
 }
 
-static union irq_bit en751221_irq_bit(union irq_purpose purpose)
+static union irq_bit en751221_irq_bit(union en75_irq_purpose purpose)
 {
 	union irq_bit bit = {0};
 	for (int i = 0; i < ARRAY_SIZE(EN751221_IRQ_MAP); i++) {
@@ -405,80 +292,105 @@ static union irq_bit en751221_irq_bit(union irq_purpose purpose)
 	return bit;
 }
 
-static void airoha_qdma_set_irqmask(struct en75_qdma *qdma, union irq_bit b, bool enable)
+static u32 __iomem *en751221_irq_status_reg(struct qregs __iomem *regs, int irqn)
 {
-	struct airoha_irq_bank *irq_bank;
+	if (irqn > 0)
+		return ERR_PTR(-EINVAL);
 
-	if (WARN_ON_ONCE(b.bank >= ARRAY_SIZE(qdma->irq_banks)))
+	return &regs->int_status;
+}
+
+static u32 __iomem *en751221_irq_enable_reg(struct qregs __iomem *regs, int irqn)
+{
+	if (irqn > 0)
+		return ERR_PTR(-EINVAL);
+
+	return &regs->int_enable;
+}
+
+/* End EN751221 IRQ functions */
+
+static void en75_qdma_set_irqmask(struct en75_qdma *qdma, union irq_bit b, bool enable)
+{
+	struct en75_irq *irq;
+
+	if (WARN_ON_ONCE(b.irq_idx >= ARRAY_SIZE(qdma->irqs)))
 		return;
 
-	irq_bank = &qdma->irq_banks[b.bank];
+	irq = &qdma->irqs[b.irq_idx];
 
-	if (WARN_ON_ONCE(b.reg_idx >= ARRAY_SIZE(irq_bank->irqmask)))
+	if (WARN_ON_ONCE(b.reg_idx >= ARRAY_SIZE(irq->irqmask)))
 		return;
 
 	if (WARN_ON_ONCE(b.bit_idx >= 32))
 		return;
 
-	guard(spinlock_irqsave)(&irq_bank->lock_irq);
+	guard(spinlock_irqsave)(&irq->lock_irq);
 
 	if (enable)
-		irq_bank->irqmask[b.reg_idx] |= BIT(b.bit_idx);
+		irq->irqmask[b.reg_idx] |= BIT(b.bit_idx);
 	else
-		irq_bank->irqmask[b.reg_idx] &= ~BIT(b.bit_idx);
+		irq->irqmask[b.reg_idx] &= ~BIT(b.bit_idx);
 
-	en75_wreg(irq_bank->irqmask[b.reg_idx], irq_bank->mask_reg[b.reg_idx]);
+	en75_wreg(irq->irqmask[b.reg_idx], irq->mask_reg[b.reg_idx]);
 
 	/* Read irq_enable register in order to guarantee the update above
 	 * completes in the spinlock critical section.
 	 */
-	en75_rreg(irq_bank->mask_reg[b.reg_idx]);
+	en75_rreg(irq->mask_reg[b.reg_idx]);
 }
 
-static int airoha_qdma_rx_napi_poll(struct napi_struct *napi, int budget)
+static int en75_qdma_rx_napi_poll(struct napi_struct *napi, int budget)
 {
-	struct airoha_queue_rx *q = container_of(napi, struct airoha_queue_rx, napi);
+	struct en75_q_rx *q = container_of(napi, struct en75_q_rx, napi);
 	struct en75_qdma *qdma = q->qdma;
 	int cur, done = 0;
 
 	do {
-		cur = airoha_qdma_rx_process(q, budget - done);
+		cur = en75_qdma_rx_process(q, budget - done);
 		done += cur;
 	} while (cur && done < budget);
 
 	if (done < budget && napi_complete(napi)) {
-		union irq_purpose purpose = IRQ_PURPOSE(DONE, RX, q - &qdma->q_rx[0]);
-		union irq_bit b = en751221_irq_bit(purpose);
-		airoha_qdma_set_irqmask(qdma, b, true);
+		union en75_irq_purpose purpose;
+		union irq_bit b;
+		
+		purpose = IRQ_PURPOSE(DONE, RX, q - &qdma->q_rx[0]);
+		b = en751221_irq_bit(purpose);
+		en75_qdma_set_irqmask(qdma, b, true);
 	}
 
 	return done;
 }
 
-static irqreturn_t airoha_irq_handler(int irq, void *dev_instance)
+static irqreturn_t en75_irq_handler(int irq_num, void *dev_instance)
 {
-	struct airoha_irq_bank *irq_bank = dev_instance;
-	struct en75_qdma *qdma = irq_bank->qdma;
-	// u32 rx_intr_mask = 0, rx_intr1, rx_intr2;
-	u32 intr[ARRAY_SIZE(irq_bank->irqmask)];
+	struct en75_irq *irq = dev_instance;
+	struct en75_qdma *qdma = irq->qdma;
 	int i;
 
-	// if (!test_bit(DEV_STATE_INITIALIZED, &qdma->eth->state))
-	// 	return IRQ_NONE;
+	guard(spinlock)(&irq->lock_irq);
 
-	guard(spinlock)(&irq_bank->lock_irq);
-
-	for (i = 0; i < ARRAY_SIZE(intr); i++) {
+	for (i = 0; i < ARRAY_SIZE(irq->irqmask); i++) {
 		unsigned long regval;
 		u32 disable_int = 0;
 		u8 bit;
 
-		regval = en75_rreg(&qdma->regs->int_status);
-		regval &= irq_bank->irqmask[i];
+		regval = en75_rreg(irq->status_reg[i]);
+		regval &= irq->irqmask[i];
+
+		/* You must write the bits back to the status register
+		 * or you will keep receiving the same interrupt. */
+		en75_wreg((u32)regval, irq->status_reg[i]);
 
 		for_each_set_bit(bit, &regval, 32) {
-			union irq_purpose p = en751221_irq_purpose((union irq_bit){
-				.bank = irq_bank - &qdma->irq_banks[0],
+			union en75_irq_purpose p;
+
+			if (irq->debug_int_cnt)
+				irq->debug_int_cnt[i * 32 + bit]++;
+
+			p = en751221_irq_purpose((union irq_bit){
+				.irq_idx = irq - &qdma->irqs[0],
 				.reg_idx = i,
 				.bit_idx = bit,
 			});
@@ -486,25 +398,25 @@ static irqreturn_t airoha_irq_handler(int irq, void *dev_instance)
 			if (p.type == IPS_DONE && p.source == IPSC_RX) {
 				napi_schedule_irqoff(&qdma->q_rx[p.chain].napi);
 				disable_int |= BIT(bit);
-			} else if (p.type == IPS_DONE && p.source == IPSC_TX) {
+				continue;
+			}
+			if (p.type == IPS_DONE && p.source == IPSC_TX) {
 				napi_schedule_irqoff(&qdma->q_tx_done[i].napi);
 				disable_int |= BIT(bit);
-			} else {
-				dev_warn(qdma->dev, "%s IRQ from %s[%d]\n",
-					 irq_purpose_type_str(p.type),
-					 irq_purpose_source_str(p.source),
-					 p.chain);			
+				continue;
 			}
+			dev_dbg_ratelimited(qdma->dev,
+					    "%s IRQ from %s[%d]\n",
+					    en75_irq_purpose_type_str(p.type),
+					    en75_irq_purpose_source_str(p.source),
+					    p.chain);
 		}
 
-		en75_wreg(intr[i], irq_bank->status_reg[i]);
-		en75_wreg(~disable_int, irq_bank->mask_reg[i]);
+		en75_wreg(~disable_int, irq->mask_reg[i]);
 	}
 
 	return IRQ_HANDLED;
 }
-
-
 
 #define IRQ_RING_IDX_MASK		GENMASK(20, 16)
 #define IRQ_DESC_IDX_MASK		GENMASK(15, 0)
@@ -512,24 +424,24 @@ static irqreturn_t airoha_irq_handler(int irq, void *dev_instance)
 static int en75_poll_tx_complete(struct napi_struct *napi, int budget)
 {
 	struct qregs_doneq_state state;
-	struct airoha_tx_doneq *done_q;
+	struct en75_tx_doneq *done_q;
 	struct en75_qdma *qdma;
 	int id, irq_queued;
 	u32 done = 0, head;
 
-	done_q = container_of(napi, struct airoha_tx_doneq, napi);
+	done_q = container_of(napi, struct en75_tx_doneq, napi);
 	qdma = done_q->qdma;
 	id = done_q - &qdma->q_tx_done[0];
 
-	state = en75_rreg(&qdma->regs->done_queue.state);
+	state = en75_rreg(&done_q->regs->state);
 	head = state.head_index;
 	head = head % done_q->size;
 	irq_queued = state.length;
 
 	while (irq_queued > 0 && done < budget) {
 		u32 index, qid, val = done_q->q[head];
-		struct airoha_queue_entry_tx *e;
-		struct airoha_queue_tx *q;
+		struct en75_q_tx_ent *e;
+		struct en75_q_tx *q;
 		struct netdev_queue *txq;
 		struct sk_buff *skb;
 		struct desc desc;
@@ -578,10 +490,6 @@ static int en75_poll_tx_complete(struct napi_struct *napi, int budget)
 		q->entry[q->freelist_tail].freelist_next = index;
 		q->freelist_tail = index;
 
-		// TODO: This should not be necessary.
-		// WRITE_ONCE(desc->msg0, 0);
-		// WRITE_ONCE(desc->msg1, 0);
-
 		txq = netdev_get_tx_queue(skb->dev,
 					  skb_get_queue_mapping(skb));
 		netdev_tx_completed_queue(txq, 1, skb->len);
@@ -603,17 +511,74 @@ static int en75_poll_tx_complete(struct napi_struct *napi, int budget)
 	}
 
 	if (done < budget && napi_complete(napi)) {
-		union irq_purpose purpose = IRQ_PURPOSE(DONE, TX, id);
+		union en75_irq_purpose purpose = IRQ_PURPOSE(DONE, TX, id);
 		union irq_bit b = en751221_irq_bit(purpose);
-		airoha_qdma_set_irqmask(qdma, b, true);
+
+		en75_qdma_set_irqmask(qdma, b, true);
 	}
 
 	return done;
 }
 
+int en75_qdma_xmit(struct en75_qdma *qdma, struct sk_buff *skb,
+		   union desc_msg *msg, int qid)
+{
+	struct en75_q_tx *q = &qdma->q_tx[qid];
+	int len = skb_headlen(skb);
+	struct en75_q_tx_ent *e;
+	u16 index, next_index;
+	struct desc *desc;
+	dma_addr_t addr;
+	int ret;
+
+	guard(spinlock_bh)(&q->lock_bh);
+
+	index = q->freelist_head;
+	if (index == 0xffff)
+		return -EBUSY;
+
+	e = &q->entry[index];
+	next_index = e->freelist_next;
+	if (next_index == 0xffff)
+		return -EBUSY;
+
+	addr = dma_map_single(qdma->dev, skb->data, len, DMA_TO_DEVICE);
+	ret = dma_mapping_error(qdma->dev, addr);
+	if (unlikely(ret))
+		return ret;
+
+	desc = &q->desc[index];
+	WRITE_ONCE(desc->pkt_addr, addr);
+	WRITE_ONCE(desc->info, (struct desc_info) { .pkt_len = len });
+	WRITE_ONCE(desc->next_idx, next_index);
+	for (int i = 0; i < ARRAY_SIZE(desc->msg.raw); i++)
+		WRITE_ONCE(desc->msg.raw[i], msg->raw[i]);
+
+	e->skb = skb;
+	e->dma_addr = addr;
+	e->dma_len = len;
+	q->freelist_head = next_index;
+
+	skb_tx_timestamp(skb);
+
+	en75_wreg((u32)next_index, &q->qchain_regs->tx_cpui);
+
+	if (q->debug_tx_cnt) {
+		int chq;
+
+		chq = get_etx_channel(&msg->etx) % EN75_NUM_CHANNELS;
+		chq *= EN75_NUM_QUEUES;
+		chq += get_etx_queue(&msg->etx) % EN75_NUM_QUEUES;
+		q->debug_tx_cnt[chq]++;
+	}
+
+	return q->entry[next_index].freelist_next == 0xffff ?
+		EBUSY : 0;
+}
+
 /* Init functions, no locks, assumed non-concurrent */
 
-static int en75_init_rx_queue(struct airoha_queue_rx *q,
+static int en75_init_rx_queue(struct en75_q_rx *q,
 			      struct en75_qdma *qdma, int ndesc)
 {
 	const struct page_pool_params pp_params = {
@@ -631,8 +596,7 @@ static int en75_init_rx_queue(struct airoha_queue_rx *q,
 	struct qregs_rxring_low rrl;
 	dma_addr_t dma_addr;
 
-	// TODO: Should be based on MTU
-	q->buf_size = PAGE_SIZE / 2;
+	q->buf_size = EN75_MAX_PACKET_SIZE;
 	q->ndesc = ndesc;
 	q->qdma = qdma;
 	q->qchain_regs = (q == &qdma->q_rx[0]) ?
@@ -657,11 +621,21 @@ static int en75_init_rx_queue(struct airoha_queue_rx *q,
 	if (!q->desc)
 		return -ENOMEM;
 
-	netif_napi_add(qdma->napi_dev, &q->napi, airoha_qdma_rx_napi_poll);
+	memset(q->desc, 0, sizeof(*q->desc));
+
+	netif_napi_add(qdma->napi_dev, &q->napi, en75_qdma_rx_napi_poll);
 
 	en75_wreg(dma_addr, &q->qchain_regs->rxbase);
-	en75_wreg(0U, &q->qchain_regs->rx_cpui);
-	en75_wreg(0U, &q->qchain_regs->rx_hwi);
+	
+	/* en75_fill_rx_queue fills everything from current cpu index + 1 up to
+	 * but excluding end_i, so to fill every entry we run it with 0 to do
+	 * 1,2,3,[...],n, then we run it with 1 to do 0. */
+	en75_fill_rx_queue(q, 0);
+	en75_fill_rx_queue(q, 1);
+
+	/* The RX hardware side considers that hwi == cpui means the queue is
+	 * full, not empty. Since cpui starts at 0, we initialize hwi to 1. */
+	en75_wreg(1U, &q->qchain_regs->rx_hwi);
 
 	rrs = en75_rreg(&qdma->regs->rxring_size);
 	rrl = en75_rreg(&qdma->regs->rxring_low);
@@ -677,41 +651,43 @@ static int en75_init_rx_queue(struct airoha_queue_rx *q,
 	en75_wreg(rrs, &qdma->regs->rxring_size);
 	en75_wreg(rrl, &qdma->regs->rxring_low);
 
-	en75_fill_rx_queue(q);
-
 	return 0;
 }
 
-static int en75_init_irq_banks(struct platform_device *pdev,
-			       struct en75_qdma *qdma,
-			       int *irqs, int num_irqs)
+static int en75_init_irqs(struct device *dev, struct en75_qdma *qdma,
+			  int *irqs, int num_irqs)
 {
-	// struct airoha_eth *eth = qdma->eth;
-	int i;//, id = qdma - &eth->qdma[0];
+	int i;
 
-	if (num_irqs < ARRAY_SIZE(qdma->irq_banks))
+	if (num_irqs < ARRAY_SIZE(qdma->irqs))
 		return -EINVAL;
 
-	for (i = 0; i < ARRAY_SIZE(qdma->irq_banks); i++) {
-		struct airoha_irq_bank *irq_bank = &qdma->irq_banks[i];
-		int err; //, irq_index = 4 * id + i;
+	for (i = 0; i < ARRAY_SIZE(qdma->irqs); i++) {
+		struct en75_irq *irq = &qdma->irqs[i];
 		const char *name;
+		int err;
+		int j;
 
-		spin_lock_init(&irq_bank->lock_irq);
-		irq_bank->qdma = qdma;
+		spin_lock_init(&irq->lock_irq);
+		irq->qdma = qdma;
 
-		irq_bank->irq = irqs[i];
-		if (irq_bank->irq < 0)
-			return irq_bank->irq;
+		irq->irq = irqs[i];
+		if (irq->irq < 0)
+			return irq->irq;
 
-		name = devm_kasprintf(&pdev->dev, GFP_KERNEL,
-				      KBUILD_MODNAME "/%d.%d", qdma->id, i);
+		for (j = 0; j < QDMA_REGS_PER_IRQ; j++) {
+			irq->status_reg[j] = en751221_irq_status_reg(qdma->regs, j);
+			irq->mask_reg[j] = en751221_irq_enable_reg(qdma->regs, j);
+		}
+
+		name = devm_kasprintf(dev, GFP_KERNEL,
+				      KBUILD_MODNAME "-%d.%d", qdma->id, i);
 		if (!name)
 			return -ENOMEM;
 
-		err = devm_request_irq(&pdev->dev, irq_bank->irq,
-				       airoha_irq_handler, IRQF_SHARED, name,
-				       irq_bank);
+		err = devm_request_irq(dev, irq->irq,
+				       en75_irq_handler, IRQF_SHARED, name,
+				       irq);
 		if (err)
 			return err;
 	}
@@ -719,11 +695,9 @@ static int en75_init_irq_banks(struct platform_device *pdev,
 	return 0;
 }
 
-static int en75_init_tx_doneq(struct airoha_tx_doneq *done_q,
+static int en75_init_tx_doneq(struct en75_tx_doneq *done_q,
 			      struct en75_qdma *qdma, int size)
 {
-	// int id = done_q - &qdma->q_tx_done[0];
-	// struct airoha_eth *eth = qdma->eth;
 	dma_addr_t dma_addr;
 
 	netif_napi_add_tx(qdma->napi_dev, &done_q->napi,
@@ -736,6 +710,7 @@ static int en75_init_tx_doneq(struct airoha_tx_doneq *done_q,
 	memset(done_q->q, 0xff, size * sizeof(u32));
 	done_q->size = size;
 	done_q->qdma = qdma;
+	done_q->regs = &qdma->regs->done_queue;
 
 	en75_wreg(dma_addr, &qdma->regs->done_queue.address);
 	struct qregs_doneq_cfg cfg = en75_rreg(&qdma->regs->done_queue.config);
@@ -743,20 +718,12 @@ static int en75_init_tx_doneq(struct airoha_tx_doneq *done_q,
 	cfg.int_threshold = 1;
 	en75_wreg(cfg, &qdma->regs->done_queue.config);
 
-	// qdma->regs->done_queue.address
-	// airoha_qdma_wr(qdma, REG_TX_IRQ_BASE(id), dma_addr);
-	// airoha_qdma_rmw(qdma, REG_TX_IRQ_CFG(id), TX_IRQ_DEPTH_MASK,
-	// 		FIELD_PREP(TX_IRQ_DEPTH_MASK, size));
-	// airoha_qdma_rmw(qdma, REG_TX_IRQ_CFG(id), TX_IRQ_THR_MASK,
-	// 		FIELD_PREP(TX_IRQ_THR_MASK, 1));
-
 	return 0;
 }
 
-static int en75_init_tx_queue(struct airoha_queue_tx *q,
+static int en75_init_tx_queue(struct en75_q_tx *q,
 			      struct en75_qdma *qdma, int size)
 {
-	// struct airoha_eth *eth = qdma->eth;
 	int i, qid = q - &qdma->q_tx[0];
 	dma_addr_t dma_addr;
 
@@ -777,14 +744,7 @@ static int en75_init_tx_queue(struct airoha_queue_tx *q,
 	if (!q->desc)
 		return -ENOMEM;
 
-	// TODO: This is probably not necessary
-	struct desc desc = {0};
-	set_desc_info_done(&desc.info, true);
-	for (i = 0; i < q->ndesc; i++) {
-		memcpy(&q->desc[i], &desc, sizeof(desc));
-		// val = FIELD_PREP(QDMA_DESC_DONE_MASK, 1);
-		// WRITE_ONCE(q->desc[i].ctrl, cpu_to_le32(val));
-	}
+	memset(q->desc, 0, sizeof(*q->desc));
 
 	for (i = 0; i < q->ndesc - 1; i++) {
 		q->entry[i].freelist_next = i + 1;
@@ -793,32 +753,19 @@ static int en75_init_tx_queue(struct airoha_queue_tx *q,
 	q->freelist_tail = q->ndesc - 1;
 	q->freelist_head = 0;
 
-
-
-	// EN7580 only
-	// /* xmit ring drop default setting */
-	// airoha_qdma_set(qdma, REG_TX_RING_BLOCKING(qid),
-	// 		TX_RING_IRQ_BLOCKING_TX_DROP_EN_MASK);
-
 	en75_wreg(dma_addr, &q->qchain_regs->txbase);
+
+	/* On TX, hardware advances hwi until it is equal to cpui. */
 	en75_wreg(0U, &q->qchain_regs->tx_cpui);
 	en75_wreg(0U, &q->qchain_regs->tx_hwi);
-
-	// airoha_qdma_wr(qdma, REG_TX_RING_BASE(qid), dma_addr);
-	// airoha_qdma_rmw(qdma, REG_TX_CPU_IDX(qid), TX_RING_CPU_IDX_MASK,
-	// 		FIELD_PREP(TX_RING_CPU_IDX_MASK, q->head));
-	// airoha_qdma_rmw(qdma, REG_TX_DMA_IDX(qid), TX_RING_DMA_IDX_MASK,
-	// 		FIELD_PREP(TX_RING_DMA_IDX_MASK, q->head));
 
 	return 0;
 }
 
 static int en75_init_hw_fwd(struct en75_qdma *qdma)
 {
-	int size, index, num_desc = qdma->cfg.num_fwd_descs; // HW_DSCP_NUM;
-	// struct airoha_eth *eth = qdma->eth;
-	// int id = qdma - &eth->qdma[0];
-	enum qregs_hwf_cfg_pkt_sz buf_size_cfg = 0;
+	enum qregs_hwf_cfg_pkt_sz buf_size_cfg = QREGS_HWF_CFG_PKT_SZ_2048;
+	int ret, size, index, num_desc = qdma->cfg.num_fwd_descs;
 	struct qregs_hwf_cfg1 cfg1;
 	dma_addr_t dma_addr;
 	u32 buf_size = 2048;
@@ -876,16 +823,13 @@ static int en75_init_hw_fwd(struct en75_qdma *qdma)
 	}
 
 	en75_wreg(dma_addr, &qdma->regs->hwf_data_addr);
-	// airoha_qdma_wr(qdma, REG_FWD_BUF_BASE, dma_addr);
 
-	size = num_desc * QDMA_FWD_DESC_SZ;
+	size = num_desc * sizeof(*qdma->hwf_desc);
 	qdma->hwf_desc = dmam_alloc_coherent(qdma->dev, size, &dma_addr, GFP_KERNEL);
 	if (!qdma->hwf_desc)
 		return -ENOMEM;
 
 	en75_wreg(dma_addr, &qdma->regs->hwf_desc_addr);
-	// airoha_qdma_wr(qdma, REG_FWD_DSCP_BASE, dma_addr);
-
 
 	cfg = en75_rreg(&qdma->regs->hwf_cfg);
 	set_qregs_hwf_cfg_pkt_sz(&cfg, buf_size_cfg);
@@ -894,28 +838,19 @@ static int en75_init_hw_fwd(struct en75_qdma *qdma)
 
 	cfg1 = en75_rreg(&qdma->regs->hwf_cfg1);
 	cfg1.fwd_desc_n = num_desc;
+	cfg1.overhead = 0x14;
 	set_qregs_hwf_cfg1_start(&cfg1, true);
+	en75_wreg(cfg1, &qdma->regs->hwf_cfg1);
 
-	// /* QDMA0: 2KB. QDMA1: 1KB */
-	// airoha_qdma_rmw(qdma, REG_HW_FWD_DSCP_CFG,
-	// 		HW_FWD_DSCP_PAYLOAD_SIZE_MASK,
-	// 		FIELD_PREP(HW_FWD_DSCP_PAYLOAD_SIZE_MASK, !!id));
-	// airoha_qdma_rmw(qdma, REG_FWD_DSCP_LOW_THR, FWD_DSCP_LOW_THR_MASK,
-	// 		FIELD_PREP(FWD_DSCP_LOW_THR_MASK, 128));
-	// airoha_qdma_rmw(qdma, REG_LMGR_INIT_CFG,
-	// 		LMGR_INIT_START | LMGR_SRAM_MODE_MASK |
-	// 		HW_FWD_DESC_NUM_MASK,
-	// 		FIELD_PREP(HW_FWD_DESC_NUM_MASK, num_desc) |
-	// 		LMGR_INIT_START | LMGR_SRAM_MODE_MASK);
-
-	return read_poll_timeout(en75_rreg, cfg1,
-				 !(cfg1.bitfield_0 & QREGS_HWF_CFG1_START), USEC_PER_MSEC,
-				 30 * USEC_PER_MSEC, true, &qdma->regs->hwf_cfg1);
-
-	// return read_poll_timeout(airoha_qdma_rr, status,
-	// 			 !(status & LMGR_INIT_START), USEC_PER_MSEC,
-	// 			 30 * USEC_PER_MSEC, true, qdma,
-	// 			 REG_LMGR_INIT_CFG);
+	ret = read_poll_timeout(en75_rreg, cfg1,
+				!is_qregs_hwf_cfg1_start(&cfg1), USEC_PER_MSEC,
+				30 * USEC_PER_MSEC, true,
+				&qdma->regs->hwf_cfg1);
+	if (ret)
+		dev_err(qdma->dev,
+			"Error %pe waiting for HW forwarding engine to start",
+			ERR_PTR(ret));
+	return ret;
 }
 
 static int en75_init_final(struct en75_qdma *qdma)
@@ -923,34 +858,37 @@ static int en75_init_final(struct en75_qdma *qdma)
 	struct qregs_qcfg qcfg;
 	int i;
 
-	for (i = 0; i < ARRAY_SIZE(qdma->irq_banks); i++) {
+	for (i = 0; i < ARRAY_SIZE(qdma->irqs); i++) {
 		int j;
 
 		/* clear pending irqs */
-		for (j = 0; j < ARRAY_SIZE(qdma->irq_banks[i].status_reg); j++)
-			en75_wreg(0xffffffffU, qdma->irq_banks[i].status_reg[j]);
+		for (j = 0; j < ARRAY_SIZE(qdma->irqs[i].status_reg); j++)
+			en75_wreg(0xffffffffU, qdma->irqs[i].status_reg[j]);
 
 		/* enable IRQs */
-		for (j = 0; j < ARRAY_SIZE(qdma->irq_banks[i].irqmask); j++) {
+		for (j = 0; j < ARRAY_SIZE(qdma->irqs[i].irqmask); j++) {
 			u32 mask = 0;
 
 			for (int k = 0; k < 32; k++) {
+				union en75_irq_purpose p;
 				union irq_bit bit = {
-					.bank = i,
+					.irq_idx = i,
 					.reg_idx = j,
 					.bit_idx = k,
 				};
-				union irq_purpose p;
 				u32 en = 0;
-				
+
+				if (!en751221_valid_irq_bit(bit))
+					continue;
+
 				p = en751221_irq_purpose(bit);
 
 				/* RX and TX done */
 				en |= (p.type == IPS_DONE);
 
 				/* Running out of resources */
-				en |= (p.type == IPS_NO_DSCP);
-				en |= (p.type == IPS_LOW_DSCP);
+				en |= (p.type == IPS_NO_DSCP && p.source != IPSC_TX);
+				en |= (p.type == IPS_LOW_DSCP && p.source != IPSC_TX);
 
 				/* Error conditions */
 				en |= (p.type == IPS_ERR_COHERENT);
@@ -964,40 +902,11 @@ static int en75_init_final(struct en75_qdma *qdma)
 				mask |= en << k;
 			}
 
-			qdma->irq_banks[i].irqmask[j] = mask;
-			en75_wreg(mask, qdma->irq_banks[i].mask_reg[j]);
+			qdma->irqs[i].irqmask[j] = mask;
+			en75_wreg(mask, qdma->irqs[i].mask_reg[j]);
 		}
-		// airoha_qdma_wr(qdma, REG_INT_STATUS(i), 0xffffffff);
-		/* setup rx irqs */
-		// airoha_qdma_irq_enable(&qdma->irq_banks[i], QDMA_INT_REG_IDX0,
-		// 		       INT_RX0_MASK(RX_IRQ_BANK_PIN_MASK(i)));
-		// airoha_qdma_irq_enable(&qdma->irq_banks[i], QDMA_INT_REG_IDX1,
-		// 		       INT_RX1_MASK(RX_IRQ_BANK_PIN_MASK(i)));
-		// airoha_qdma_irq_enable(&qdma->irq_banks[i], QDMA_INT_REG_IDX2,
-		// 		       INT_RX2_MASK(RX_IRQ_BANK_PIN_MASK(i)));
-		// airoha_qdma_irq_enable(&qdma->irq_banks[i], QDMA_INT_REG_IDX3,
-		// 		       INT_RX3_MASK(RX_IRQ_BANK_PIN_MASK(i)));
 	}
-	/* setup tx irqs */
-	// airoha_qdma_irq_enable(&qdma->irq_banks[0], QDMA_INT_REG_IDX0,
-	// 		       TX_COHERENT_LOW_INT_MASK | INT_TX_MASK);
-	// airoha_qdma_irq_enable(&qdma->irq_banks[0], QDMA_INT_REG_IDX4,
-	// 		       TX_COHERENT_HIGH_INT_MASK);
 
-	// /* setup irq binding */
-	// for (i = 0; i < ARRAY_SIZE(qdma->q_tx); i++) {
-	// 	if (!qdma->q_tx[i].ndesc)
-	// 		continue;
-
-	// 	if (TX_RING_IRQ_BLOCKING_MAP_MASK & BIT(i))
-	// 		airoha_qdma_set(qdma, REG_TX_RING_BLOCKING(i),
-	// 				TX_RING_IRQ_BLOCKING_CFG_MASK);
-	// 	else
-	// 		airoha_qdma_clear(qdma, REG_TX_RING_BLOCKING(i),
-	// 				  TX_RING_IRQ_BLOCKING_CFG_MASK);
-	// }
-
-	// QCFG_RX_2B_OFFSET
 	qcfg = (struct qregs_qcfg) { 0 };
 	set_qregs_qcfg_msg_word_swap(&qcfg, true);
 	set_qregs_qcfg_dscp_byte_swap(&qcfg, true);
@@ -1006,67 +915,30 @@ static int en75_init_final(struct en75_qdma *qdma)
 	set_qregs_qcfg_check_done(&qcfg, true);
 	set_qregs_qcfg_tx_wb_done(&qcfg, true);
 	set_qregs_qcfg_burst_size(&qcfg, QREGS_QCFG_BURST_SIZE_128_BYTES);
-	// set_qregs_qcfg_rx_dma_en(&qcfg, true); // set on qdma_use
-	// set_qregs_qcfg_tx_dma_en(&qcfg, true);
 	en75_wreg(qcfg, &qdma->regs->qdma_cfg);
 
-	// airoha_qdma_wr(qdma, REG_QDMA_GLOBAL_CFG,
-	// 	       FIELD_PREP(GLOBAL_CFG_DMA_PREFERENCE_MASK, 3) |
-	// 	       GLOBAL_CFG_CPU_TXR_RR_MASK |
-	// 	       GLOBAL_CFG_PAYLOAD_BYTE_SWAP_MASK |
-	// 	       GLOBAL_CFG_MULTICAST_MODIFY_FP_MASK |
-	// 	       GLOBAL_CFG_MULTICAST_EN_MASK |
-	// 	       GLOBAL_CFG_IRQ0_EN_MASK | GLOBAL_CFG_IRQ1_EN_MASK |
-	// 	       GLOBAL_CFG_TX_WB_DONE_MASK |
-	// 	       FIELD_PREP(GLOBAL_CFG_MAX_ISSUE_NUM_MASK, 2));
-
-	// TODO
-	//airoha_qdma_init_qos(qdma);
-
 	en75_wreg(0U, &qdma->regs->rx_int_delay);
-	/* disable qdma rx delay interrupt */
-	// for (i = 0; i < ARRAY_SIZE(qdma->q_rx); i++) {
-	// 	if (!qdma->q_rx[i].ndesc)
-	// 		continue;
-
-	// 	airoha_qdma_clear(qdma, REG_RX_DELAY_INT_IDX(i),
-	// 			  RX_DELAY_INT_MASK);
-	// }
 
 	struct qregs_tx_congest_cfg cngst_cfg = {0};
 	set_qregs_tx_congest_cfg_tail_drop_en(&cngst_cfg, true);
 	set_qregs_tx_congest_cfg_dei_drop_en(&cngst_cfg, true);
 	en75_wreg(cngst_cfg, &qdma->regs->tx_congest_cfg);
 
-	// airoha_qdma_set(qdma, REG_TXQ_CNGST_CFG,
-	// 		TXQ_CNGST_DROP_EN | TXQ_CNGST_DEI_DROP_EN);
-
-	// TODO
-	// airoha_qdma_init_qos_stats(qdma);
-
 	return 0;
 }
 
-static int en75_init(struct platform_device *pdev,
+static int en75_init(struct device *dev,
 		     struct en75_qdma *qdma,
 		     int *irqs,
 		     int num_irqs)
 {
-	int err; //, id = qdma - &eth->qdma[0];
+	int err;
 	int i;
-	// const char *res;
 
-	// // qdma->eth = eth;
-	// res = devm_kasprintf(pdev->dev, GFP_KERNEL, "qdma%d", id);
-	// if (!res)
-	// 	return -ENOMEM;
+	/* Make sure RX and TX are shutdown */
+	en75_wreg((struct qregs_qcfg) { 0 }, &qdma->regs->qdma_cfg);
 
-	//devm_platform_ioremap_resource_byname(pdev, res);
-	// if (IS_ERR(qdma->regs))
-	// 	return dev_err_probe(eth->dev, PTR_ERR(qdma->regs),
-	// 			     "failed to iomap qdma%d regs\n", id);
-
-	err = en75_init_irq_banks(pdev, qdma, irqs, num_irqs);
+	err = en75_init_irqs(dev, qdma, irqs, num_irqs);
 	if (err)
 		return err;
 
@@ -1100,6 +972,29 @@ static int en75_init(struct platform_device *pdev,
 
 /* End init functions */
 
+static void en75_qdma_destroy_rxq_locked(struct en75_q_rx *q)
+{
+	int i;
+
+	if (!q->page_pool)
+		return;
+
+	for (i = 0; i < q->ndesc; i++) {
+		struct en75_q_rx_ent *e = &q->entry[i];
+		struct page *page = virt_to_head_page(e->buf);
+
+		if (WARN_ON_ONCE(!e->dma_addr))
+			continue;
+
+		dma_sync_single_for_cpu(q->qdma->dev, e->dma_addr, e->dma_len,
+					page_pool_get_dma_dir(q->page_pool));
+		page_pool_put_full_page(q->page_pool, page, false);
+	}
+
+	page_pool_destroy(q->page_pool);
+	q->page_pool = NULL;
+}
+
 static int en75_qdma_destroy_locked(struct en75_qdma *qdma)
 {
 	int i;
@@ -1110,28 +1005,13 @@ static int en75_qdma_destroy_locked(struct en75_qdma *qdma)
 	}
 
 	for (i = 0; i < ARRAY_SIZE(qdma->q_rx); i++) {
-		struct airoha_queue_rx *q = &qdma->q_rx[i];
-
-		if (q->napi.dev)
-			netif_napi_del(&q->napi);
-
-		while (q->queued) {
-			struct airoha_queue_entry_rx *e = &q->entry[q->tail];
-			struct page *page = virt_to_head_page(e->buf);
-
-			dma_sync_single_for_cpu(qdma->dev, e->dma_addr, e->dma_len,
-						page_pool_get_dma_dir(q->page_pool));
-			page_pool_put_full_page(q->page_pool, page, false);
-			q->tail = (q->tail + 1) % q->ndesc;
-			q->queued--;
-		}
-
-		if (q->page_pool)
-			page_pool_destroy(q->page_pool);
+		struct en75_q_rx *q = &qdma->q_rx[i];
+		en75_qdma_destroy_rxq_locked(q);
+		netif_napi_del(&q->napi);
 	}
 
 	for (i = 0; i < ARRAY_SIZE(qdma->q_tx_done); i++) {
-		struct airoha_tx_doneq *q = &qdma->q_tx_done[i];
+		struct en75_tx_doneq *q = &qdma->q_tx_done[i];
 
 		if (q->napi.dev)
 			netif_napi_del(&q->napi);
@@ -1198,11 +1078,11 @@ int en75_qdma_unuse(struct en75_qdma *qdma)
 		napi_disable(&qdma->q_tx_done[i].napi);
 
 	for (i = 0; i < ARRAY_SIZE(qdma->q_tx); i++) {
-		struct airoha_queue_tx *q = &qdma->q_tx[i];
+		struct en75_q_tx *q = &qdma->q_tx[i];
 	
 		guard(spinlock_bh)(&q->lock_bh);
 		for (j = 0; j < q->ndesc; j++) {
-			struct airoha_queue_entry_tx *e = &q->entry[j];
+			struct en75_q_tx_ent *e = &q->entry[j];
 
 			/* In the free list already */
 			if (!e->dma_addr)
@@ -1225,148 +1105,23 @@ int en75_qdma_unuse(struct en75_qdma *qdma)
 	return 0;
 }
 
-int en75_qdma_xmit(struct en75_qdma *qdma, struct sk_buff *skb,
-		   union desc_msg *msg, int qid)
-{
-	struct airoha_queue_tx *q = &qdma->q_tx[qid];
-	struct airoha_queue_entry_tx *e;
-	int len = skb_headlen(skb);
-	struct desc *desc;
-	dma_addr_t addr;
-	u16 index;
-	int ret;
-
-	guard(spinlock_bh)(&q->lock_bh);
-
-	index = q->freelist_head;
-	if (index == 0xffff)
-		return -EBUSY;
-
-	e = &q->entry[index];
-	if (e->freelist_next == 0xffff)
-		return -EBUSY;
-
-	addr = dma_map_single(qdma->dev, skb->data, len, DMA_TO_DEVICE);
-	ret = dma_mapping_error(qdma->dev, addr);
-	if (unlikely(ret))
-		return ret;
-
-	desc = &q->desc[index];
-	WRITE_ONCE(desc->pkt_addr, addr);
-	WRITE_ONCE(desc->info, (struct desc_info) { .pkt_len = len });
-	WRITE_ONCE(desc->next_idx, e->freelist_next);
-	for (int i = 0; i < ARRAY_SIZE(desc->msg.raw); i++)
-		WRITE_ONCE(desc->msg.raw[i], msg->raw[i]);
-
-	e->skb = skb;
-	e->dma_addr = addr;
-	e->dma_len = len;
-	q->freelist_head = e->freelist_next;
-
-	skb_tx_timestamp(skb);
-
-	en75_wreg((u32)index, &q->qchain_regs->tx_cpui);
-
-	return q->entry[e->freelist_next].freelist_next == 0xffff ?
-		EBUSY : 0;
-
-	// txq = netdev_get_tx_queue(dev, qid);
-	// nr_frags = 1 + skb_shinfo(skb)->nr_frags;
-
-	// if (airoha_dev_tx_queue_busy(q, nr_frags)) {
-	// 	/* not enough space in the queue */
-	// 	netif_tx_stop_queue(txq);
-	// 	spin_unlock_bh(&q->lock);
-	// 	return NETDEV_TX_BUSY;
-	// }
-
-	// len = skb_headlen(skb);
-	// data = skb->data;
-	// index = q->head;
-
-	// for (i = 0; i < nr_frags; i++) {
-	// 	struct airoha_qdma_desc *desc = &q->desc[index];
-	// 	struct airoha_queue_entry *e = &q->entry[index];
-	// 	skb_frag_t *frag = &skb_shinfo(skb)->frags[i];
-	// 	dma_addr_t addr;
-	// 	u32 val;
-
-	// 	addr = dma_map_single(dev->dev.parent, data, len,
-	// 			      DMA_TO_DEVICE);
-	// 	if (unlikely(dma_mapping_error(dev->dev.parent, addr)))
-	// 		goto error_unmap;
-
-	// 	index = (index + 1) % q->ndesc;
-
-	// 	val = FIELD_PREP(QDMA_DESC_LEN_MASK, len);
-	// 	if (i < nr_frags - 1)
-	// 		val |= FIELD_PREP(QDMA_DESC_MORE_MASK, 1);
-	// 	WRITE_ONCE(desc->ctrl, cpu_to_le32(val));
-	// 	WRITE_ONCE(desc->addr, cpu_to_le32(addr));
-	// 	val = FIELD_PREP(QDMA_DESC_NEXT_ID_MASK, index);
-	// 	WRITE_ONCE(desc->data, cpu_to_le32(val));
-	// 	WRITE_ONCE(desc->msg0, cpu_to_le32(msg0));
-	// 	WRITE_ONCE(desc->msg1, cpu_to_le32(msg1));
-	// 	WRITE_ONCE(desc->msg2, cpu_to_le32(0xffff));
-
-	// 	e->skb = i ? NULL : skb;
-	// 	e->dma_addr = addr;
-	// 	e->dma_len = len;
-
-	// 	data = skb_frag_address(frag);
-	// 	len = skb_frag_size(frag);
-	// }
-
-	// q->head = index;
-	// q->queued += i;
-
-	// skb_tx_timestamp(skb);
-	// netdev_tx_sent_queue(txq, skb->len);
-
-	// if (netif_xmit_stopped(txq) || !netdev_xmit_more())
-	// 	airoha_qdma_rmw(qdma, REG_TX_CPU_IDX(qid),
-	// 			TX_RING_CPU_IDX_MASK,
-	// 			FIELD_PREP(TX_RING_CPU_IDX_MASK, q->head));
-
-	// if (q->ndesc - q->tqueued < q->free_thr)
-	// 	return EBUSY;
-	// 	// netif_tx_stop_queue(txq);
-
-	// spin_unlock_bh(&q->lock);
-
-	return 0;
-
-// error_unmap:
-// 	for (i--; i >= 0; i--) {
-// 		index = (q->head + i) % q->ndesc;
-// 		dma_unmap_single(dev->dev.parent, q->entry[index].dma_addr,
-// 				 q->entry[index].dma_len, DMA_TO_DEVICE);
-// 	}
-
-	// spin_unlock_bh(&q->lock);
-// error:
-// 	dev_kfree_skb_any(skb);
-// 	dev->stats.tx_dropped++;
-
-// 	return NETDEV_TX_OK;
-}
-
-struct en75_qdma *en75_qdma_new(struct platform_device *pdev,
+struct en75_qdma *en75_qdma_new(struct en75_eth *eth,
 				void __iomem *qdma_regs,
 				int id,
 				int *irqs,
 				int num_irqs,
 				struct en75_qdma_cfg *cfg,
-				struct en75_eth *eth)
+				struct en75_debug_qdma_conf *debug)
 {
 	struct en75_qdma *qdma;
 	int err;
+	int i;
 
-	qdma = devm_kzalloc(&pdev->dev, sizeof(*qdma), GFP_KERNEL);
+	qdma = devm_kzalloc(eth->dev, sizeof(*qdma), GFP_KERNEL);
 	if (!qdma)
 		return ERR_PTR(-ENOMEM);
 
-	qdma->dev = &pdev->dev;
+	qdma->dev = eth->dev;
 	qdma->id = id;
 	mutex_init(&qdma->lock);
 	qdma->regs = qdma_regs;
@@ -1380,10 +1135,55 @@ struct en75_qdma *en75_qdma_new(struct platform_device *pdev,
 	qdma->napi_dev->threaded = true;
 	snprintf(qdma->napi_dev->name, sizeof qdma->napi_dev->name, "qdma%d_eth", id);
 
-	err = en75_init(pdev, qdma, irqs, num_irqs);
+	err = en75_init(eth->dev, qdma, irqs, num_irqs);
 	if (err) {
 		en75_qdma_destroy(qdma);
 		return ERR_PTR(err);
+	}
+
+	if (!debug)
+		return qdma;
+
+	debug->regs = qdma_regs;
+	debug->hwf_desc = qdma->hwf_desc;
+	BUILD_BUG_ON(ARRAY_SIZE(qdma->q_rx) != ARRAY_SIZE(debug->chains));
+	BUILD_BUG_ON(ARRAY_SIZE(qdma->q_tx) != ARRAY_SIZE(debug->chains));
+	for (i = 0; i < ARRAY_SIZE(debug->chains); i++) {
+		u32 *cntr;
+
+		cntr = devm_kzalloc(eth->dev, sizeof(*cntr) *
+					EN75_NUM_CHANNELS * EN75_NUM_QUEUES,
+					GFP_KERNEL);
+		debug->chains[i].tx_per_ch_q = cntr;
+		qdma->q_tx[i].debug_tx_cnt = cntr;
+
+		debug->chains[i].rx_descs = qdma->q_rx[i].desc;
+		debug->chains[i].rx_count = qdma->q_rx[i].ndesc;
+		debug->chains[i].tx_descs = qdma->q_tx[i].desc;
+		debug->chains[i].tx_count = qdma->q_tx[i].ndesc;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(debug->irqs); i++) {
+		struct en75_debug_qdma_irq_conf *cnf;
+		u32 *cntr;
+		int j;
+
+		cnf = &debug->irqs[i];
+		cntr = devm_kzalloc(eth->dev, sizeof(*cntr) *
+				    ARRAY_SIZE(cnf->desc), GFP_KERNEL);
+		cnf->counters = cntr;
+		qdma->irqs[i].debug_int_cnt = cntr;
+
+		for (j = 0; j < ARRAY_SIZE(cnf->desc); j++) {
+			union irq_bit bit = {
+				.irq_idx = i,
+				.reg_idx = j / 32,
+				.bit_idx = j % 32,
+			};
+
+			if (en751221_valid_irq_bit(bit))
+				cnf->desc[j] = en751221_irq_purpose(bit);
+		}
 	}
 
 	return qdma;

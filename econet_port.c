@@ -7,6 +7,7 @@
 
 #include <linux/skbuff.h>
 #include <linux/etherdevice.h>
+#include <linux/netdevice.h>
 #include <net/dsa.h>
 #include <linux/platform_device.h>
 #include <linux/reset.h>
@@ -14,9 +15,7 @@
 
 #include "econet_eth.h"
 #include "gdm_regs.h"
-#include "linux/netdevice.h"
 #include "qdma_desc.h"
-#include "econet_port.h"
 
 struct en75_hw_stats {
 	/* protect concurrent hw_stats accesses */
@@ -70,7 +69,11 @@ struct en75_hw_stats {
 
 	struct en75_qdma *qdma;
 
+	struct en75_eth *eth;
+
 	enum etx_fport fport;
+
+	int qid;
 };
 
 static void en75_set_macaddr(struct en75_gdm_port *port, const u8 *addr)
@@ -78,21 +81,19 @@ static void en75_set_macaddr(struct en75_gdm_port *port, const u8 *addr)
 	struct gdm_mymac_msb msb;
 	struct gdm_mymac_lsb lsb;
 
-	guard(spinlock)(&port->reg_lock);
-	msb = en75_rreg(&port->regs->mymac_msb);
-	msb.a = addr[0];
-	msb.b = addr[1];
-	lsb.c = addr[2];
-	lsb.d = addr[3];
-	lsb.e = addr[4];
-	lsb.f = addr[5];
-	en75_wreg(lsb, &port->regs->mymac_lsb);
-	en75_wreg(msb, &port->regs->mymac_msb);
+	scoped_guard(spinlock, &port->reg_lock) {
+		msb = en75_rreg(&port->regs->mymac_msb);
+		msb.a = addr[0];
+		msb.b = addr[1];
+		lsb.c = addr[2];
+		lsb.d = addr[3];
+		lsb.e = addr[4];
+		lsb.f = addr[5];
+		en75_wreg(lsb, &port->regs->mymac_lsb);
+		en75_wreg(msb, &port->regs->mymac_msb);
+	}
 
-	// TODO: Switch?
-	// /* fill in switch's MAC address */
-	// mtk_w32(eth, maclw, GSW_SMACCR0);
-	// mtk_w32(eth, machw, GSW_SMACCR1);
+	en75_port_set_macaddr(port->eth, port->fport, addr);
 }
 
 static int en75_dev_set_macaddr(struct net_device *dev, void *p)
@@ -109,7 +110,8 @@ static int en75_dev_set_macaddr(struct net_device *dev, void *p)
 	return 0;
 }
 
-static void en75_set_gdm_port_fwd_cfg(struct en75_gdm_port *port, u8 val)
+static void en75_set_gdm_port_fwd_cfg(struct en75_gdm_port *port,
+				      enum etx_fport val)
 {
 	struct fwd_cfg fc;
 
@@ -119,6 +121,7 @@ static void en75_set_gdm_port_fwd_cfg(struct en75_gdm_port *port, u8 val)
 	set_gdm_fwd_cfg_mcast_fport(&fc, val);
 	set_gdm_fwd_cfg_bcast_fport(&fc, val);
 	set_gdm_fwd_cfg_default_fport(&fc, val);
+	set_gdm_fwd_cfg_drop_oversize(&fc, true);
 	en75_wreg(fc, &port->regs->fwd_cfg);
 }
 
@@ -127,7 +130,9 @@ static int en75_dev_init(struct net_device *dev)
 	struct en75_gdm_port *port = netdev_priv(dev);
 
 	en75_set_macaddr(port, dev->dev_addr);
-	en75_set_gdm_port_fwd_cfg(port, DPORT_PPE);
+	/* TODO: When the PPE is setup, we will want to route
+	         evetything to that */
+	en75_set_gdm_port_fwd_cfg(port, ETX_FPORT_QDMA0_CPU);
 
 	return 0;
 }
@@ -154,8 +159,6 @@ static int en75_dev_open(struct net_device *dev)
 	en75_wreg(rlt, &port->regs->rx_len_threshold);
 
 	return en75_qdma_use(port->qdma);
-
-	return 0;
 }
 
 static int en75_dev_stop(struct net_device *dev)
@@ -182,38 +185,12 @@ static int en75_dev_change_mtu(struct net_device *dev, int mtu)
 	return 0;
 }
 
-static u16 en75_dev_select_queue(struct net_device *dev, struct sk_buff *skb,
-				 struct net_device *sb_dev)
-{
-	// TODO, smart queue selection
-	return 0;
-
-	// struct airoha_gdm_port *port = netdev_priv(dev);
-	// int queue, channel;
-
-	// /* For dsa device select QoS channel according to the dsa user port
-	//  * index, rely on port id otherwise. Select QoS queue based on the
-	//  * skb priority.
-	//  */
-	// channel = netdev_uses_dsa(dev) ? skb_get_queue_mapping(skb) : port->id;
-	// channel = channel % AIROHA_NUM_QOS_CHANNELS;
-	// queue = (skb->priority - 1) % AIROHA_NUM_QOS_QUEUES; /* QoS queue */
-	// queue = channel * AIROHA_NUM_QOS_QUEUES + queue;
-
-	// return queue < dev->num_tx_queues ? queue : 0;
-}
-
 static netdev_tx_t en75_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct en75_gdm_port *port = netdev_priv(dev);
 	int qid, ret = 0, len = skb->len;
 	struct netdev_queue *txq;
 	union desc_msg msg = {0};
-
-	/* Non-linear skbs are unsupported, we shouldn't get them but
-	 * if we do, we'll attempt to linearize. */
-	if (skb_linearize(skb))
-		goto error;
 
 	qid = skb_get_queue_mapping(skb);
 	set_etx_channel(&msg.etx, qid / EN75_NUM_QUEUES);
@@ -222,16 +199,22 @@ static netdev_tx_t en75_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	txq = netdev_get_tx_queue(dev, qid);
 
+	/* Non-linear skbs are unsupported, we shouldn't get them but
+	 * if we do, we'll attempt to linearize. */
+	if (skb_linearize(skb))
+		goto error;
+
 	ret = en75_qdma_xmit(port->qdma, skb, &msg, 0);
 
-	if (ret >= 0) {
-		netdev_tx_sent_queue(txq, len);
+	if (ret < 0)
+		goto error;
 
-		if (ret == EBUSY)
-			netif_tx_stop_queue(txq);
+	netdev_tx_sent_queue(txq, len);
 
-		return NETDEV_TX_OK;
-	}
+	if (ret == EBUSY)
+		netif_tx_stop_queue(txq);
+
+	return NETDEV_TX_OK;
 
 error:
 	dev_kfree_skb_any(skb);
@@ -410,7 +393,6 @@ static const struct net_device_ops en75_netdev_ops = {
 	.ndo_open		= en75_dev_open,
 	.ndo_stop		= en75_dev_stop,
 	.ndo_change_mtu		= en75_dev_change_mtu,
-	.ndo_select_queue	= en75_dev_select_queue,
 	.ndo_start_xmit		= en75_dev_xmit,
 	.ndo_get_stats64        = en75_dev_get_stats64,
 	.ndo_set_mac_address	= en75_dev_set_macaddr,
@@ -422,32 +404,28 @@ static const struct ethtool_ops en75_ethtool_ops = {
 	.get_rmon_stats		= en75_ethtool_get_rmon_stats,
 };
 
-struct net_device *en75_alloc_gdm_port(struct device *dev,
+struct net_device *en75_alloc_gdm_port(struct en75_eth *eth,
 				       struct device_node *np,
 				       struct gdm __iomem *regs,
 				       struct en75_qdma *qdma,
 				       enum etx_fport fport,
 				       bool has_g2_stats)
 {
-	// const __be32 *id_ptr = of_get_property(np, "reg", NULL);
 	struct en75_gdm_port *port;
 	struct net_device *ndev;
 	int err;
 
-	// if (!id_ptr) {
-	// 	dev_err(dev, "missing gdm port id\n");
-	// 	return ERR_PTR(-EINVAL);
-	// }
-
-	ndev = devm_alloc_etherdev(dev, sizeof(*port));
+	ndev = devm_alloc_etherdev_mqs(eth->dev, sizeof(*port),
+				       EN75_NUM_SOFT_QUEUES,
+				       EN75_NUM_SOFT_QUEUES);
 	if (!ndev) {
-		dev_err(dev, "alloc_etherdev failed\n");
+		dev_err(eth->dev, "alloc_etherdev failed\n");
 		return ERR_PTR(-ENOMEM);
 	}
 
 	ndev->netdev_ops = &en75_netdev_ops;
 	ndev->ethtool_ops = &en75_ethtool_ops;
-	ndev->max_mtu = AIROHA_MAX_PACKET_SIZE;
+	ndev->max_mtu = EN75_MAX_PACKET_SIZE;
 	ndev->watchdog_timeo = 5 * HZ;
 
 	/*
@@ -469,7 +447,7 @@ struct net_device *en75_alloc_gdm_port(struct device *dev,
 	ndev->features |= ndev->hw_features;
 	ndev->vlan_features = ndev->hw_features;
 	ndev->dev.of_node = np;
-	SET_NETDEV_DEV(ndev, dev);
+	SET_NETDEV_DEV(ndev, eth->dev);
 
 	err = of_get_ethdev_address(np, ndev);
 	if (err) {
@@ -477,7 +455,7 @@ struct net_device *en75_alloc_gdm_port(struct device *dev,
 			return ERR_PTR(err);
 
 		eth_hw_addr_random(ndev);
-		dev_info(dev, "generated random MAC address %pM\n",
+		dev_info(eth->dev, "generated random MAC address %pM\n",
 			 ndev->dev_addr);
 	}
 
@@ -489,6 +467,8 @@ struct net_device *en75_alloc_gdm_port(struct device *dev,
 	port->dev = ndev;
 	port->regs = regs;
 	port->fport = fport;
+	port->qdma = qdma;
+	port->eth = eth;
 
 	// TODO: This is pretty easy to enable
 // 	err = airoha_metadata_dst_alloc(port);
@@ -498,6 +478,12 @@ struct net_device *en75_alloc_gdm_port(struct device *dev,
 	err = register_netdev(ndev);
 	if (err)
 		goto free_metadata_dst;
+
+	dev_info(eth->dev, "port %d%s registered with %pM\n",
+		fport,
+		(fport == ETX_FPORT_GDM1) ? " (LAN)" :
+		(fport == ETX_FPORT_GDM2) ? " (WAN)" : "",
+		ndev->dev_addr);
 
 	return ndev;
 

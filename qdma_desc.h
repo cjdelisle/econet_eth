@@ -9,49 +9,52 @@
 #define FIELD_SET(current, mask, val)	\
 	(((current) & ~(mask)) | FIELD_PREP((mask), (val)))
 
-/**
- * qdma_desc_etx
- * 
- *     3                     2                   1                   0
- *     1 0 9 8 7 6 5 4 3 2 1 0 9 8 7 6 5 4 3 2 1 0 9 8 7 6 5 4 3 2 1 0
- *    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
- *  0 | nknwn |             sp_tag            |O|    channel    |queue|
- *    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
- *  4 |I|C|T|S|  udf_pmap |fport|E|vty|            vlan_tag           |
- *    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
- *  8 
- * 
- * @bitfield_0 (32 bit): 
- *   @unknown0 "nknwn" (bits 31..28): Unused, called "rev" probably short for
- *                                    reserved
- *   @sp_tag (bits 27..12): MediaTek "Special Tag" format which encapsulates
- *                          both switch port number and possible VLAN
- *   @oam "O" (bit 11): OAM (management) frame, never used with Ethernet
- *                      transmissions
- *   @channel (bits 10..3): The channel number for QoS prioritization
- *   @queue (bits 2..0): The queue number for QoS prioritization
- * @bitfield_1 (16 bit): 
- *   @ico "I" (1 bit): Checksum offload, probably IP
- *   @uco "C" (1 bit): Checksum offload, probably UDP
- *   @tco "T" (1 bit): Checksum offload, probably TCP
- *   @sco "S" (1 bit): Unknown, maybe SCTP checksum offload
- *   @udf_pmap (6 bit): Unknown / unused
- *   @fport (3 bit): Where in the Frame Engine to send the packet to Loopback is
- *                   immediate loopback, QDMA_LOOPBACK is loopback after QoS
- *                   reprioritization and QDMA_HW_LOOPBACK is loopback after (I
- *                   think) hardware forwarding. The most useful values are LAN,
- *                   WAN, and PPE (Packet Processing Engine).
- *   @vlan_en "E" (1 bit): If 1 then add a vlan header to the packet
- *   @vlan_type "vty" (2 bit): Which type of vlan to add to the packet header
- * @vlan_tag (16 bit): The VLAN number, if vlan_en is set
- */
-struct qdma_desc_etx {
+/** etx:  */
+struct etx {
+	/**
+	 * See accessors:
+	 * get_etx_unknown0()
+	 * set_etx_unknown0()
+	 * get_etx_sp_tag()
+	 * set_etx_sp_tag()
+	 * is_etx_oam()
+	 * set_etx_oam()
+	 * get_etx_channel()
+	 * set_etx_channel()
+	 * get_etx_queue()
+	 * set_etx_queue()
+	 */
 	u32 bitfield_0;
+
+	/**
+	 * See accessors:
+	 * is_etx_ico()
+	 * set_etx_ico()
+	 * is_etx_uco()
+	 * set_etx_uco()
+	 * is_etx_tco()
+	 * set_etx_tco()
+	 * is_etx_sco()
+	 * set_etx_sco()
+	 * get_etx_udf_pmap()
+	 * set_etx_udf_pmap()
+	 * get_etx_fport()
+	 * set_etx_fport()
+	 * is_etx_vlan_en()
+	 * set_etx_vlan_en()
+	 * get_etx_vlan_type()
+	 * set_etx_vlan_type()
+	 */
 	u16 bitfield_1;
+
+	/** etx_vlan_tag: The VLAN number, if vlan_en is set */
 	u16 vlan_tag;
+
 };
 
-/* qdma_desc_etx bitfield_0 */
+/**
+ * Bitfield accessors for: etx bitfield_0
+ */
 
 #define ETX_UNKNOWN0_MASK				GENMASK(31, 28)
 #define ETX_SP_TAG_MASK					GENMASK(27, 12)
@@ -59,46 +62,62 @@ struct qdma_desc_etx {
 #define ETX_CHANNEL_MASK				GENMASK(10, 3)
 #define ETX_QUEUE_MASK					GENMASK(2, 0)
 
-static inline u8 get_etx_unknown0(struct qdma_desc_etx *x) {
+
+/** Unused, called "rev" probably short for reserved */
+static inline u8 get_etx_unknown0(struct etx *x) {
 	return FIELD_GET(ETX_UNKNOWN0_MASK, x->bitfield_0);
 }
-static inline void set_etx_unknown0(struct qdma_desc_etx *x, u8 v) {
+static inline void set_etx_unknown0(struct etx *x, u8 v) {
 	x->bitfield_0 = FIELD_SET(x->bitfield_0, ETX_UNKNOWN0_MASK, v);
 }
-static inline u16 get_etx_sp_tag(struct qdma_desc_etx *x) {
+
+/**
+ * MediaTek "Special Tag" format which encapsulates both switch port number and
+ * possible VLAN
+ */
+static inline u16 get_etx_sp_tag(struct etx *x) {
 	return FIELD_GET(ETX_SP_TAG_MASK, x->bitfield_0);
 }
-static inline void set_etx_sp_tag(struct qdma_desc_etx *x, u16 v) {
+static inline void set_etx_sp_tag(struct etx *x, u16 v) {
 	x->bitfield_0 = FIELD_SET(x->bitfield_0, ETX_SP_TAG_MASK, v);
 }
-static inline bool is_etx_oam(struct qdma_desc_etx *x) {
+
+/** OAM (management) frame, never used with Ethernet transmissions */
+static inline bool is_etx_oam(struct etx *x) {
 	return FIELD_GET(ETX_OAM, x->bitfield_0);
 }
-static inline void set_etx_oam(struct qdma_desc_etx *x, bool v) {
+static inline void set_etx_oam(struct etx *x, bool v) {
 	x->bitfield_0 = FIELD_SET(x->bitfield_0, ETX_OAM, v);
 }
-static inline u8 get_etx_channel(struct qdma_desc_etx *x) {
+
+/** The channel number for QoS prioritization */
+static inline u8 get_etx_channel(struct etx *x) {
 	return FIELD_GET(ETX_CHANNEL_MASK, x->bitfield_0);
 }
-static inline void set_etx_channel(struct qdma_desc_etx *x, u8 v) {
+static inline void set_etx_channel(struct etx *x, u8 v) {
 	x->bitfield_0 = FIELD_SET(x->bitfield_0, ETX_CHANNEL_MASK, v);
 }
-static inline u8 get_etx_queue(struct qdma_desc_etx *x) {
+
+/** The queue number for QoS prioritization */
+static inline u8 get_etx_queue(struct etx *x) {
 	return FIELD_GET(ETX_QUEUE_MASK, x->bitfield_0);
 }
-static inline void set_etx_queue(struct qdma_desc_etx *x, u8 v) {
+static inline void set_etx_queue(struct etx *x, u8 v) {
 	x->bitfield_0 = FIELD_SET(x->bitfield_0, ETX_QUEUE_MASK, v);
 }
 
-/* qdma_desc_etx bitfield_1 */
+/**
+ * Bitfield accessors for: etx bitfield_1
+ */
 
 enum etx_fport {
-	ETX_FPORT_LOOPBACK				= 0,
-	ETX_FPORT_LAN					= 1,
-	ETX_FPORT_WAN					= 2,
+	ETX_FPORT_QDMA0_CPU				= 0,
+	ETX_FPORT_GDM1					= 1,
+	ETX_FPORT_GDM2					= 2,
+	ETX_FPORT_QDMA0_HWF				= 3,
 	ETX_FPORT_PPE					= 4,
-	ETX_FPORT_QDMA_LOOPBACK				= 5,
-	ETX_FPORT_QDMA_HW_LOOPBACK			= 6,
+	ETX_FPORT_QDMA1_CPU				= 5,
+	ETX_FPORT_QDMA1_HWF				= 6,
 	ETX_FPORT_DROP					= 7,
 };
 enum etx_vlan_type {
@@ -117,52 +136,73 @@ enum etx_vlan_type {
 #define ETX_VLAN_EN					BIT(2)
 #define ETX_VLAN_TYPE_MASK				GENMASK(1, 0)
 
-static inline bool is_etx_ico(struct qdma_desc_etx *x) {
+
+/** Checksum offload, probably IP */
+static inline bool is_etx_ico(struct etx *x) {
 	return FIELD_GET(ETX_ICO, x->bitfield_1);
 }
-static inline void set_etx_ico(struct qdma_desc_etx *x, bool v) {
+static inline void set_etx_ico(struct etx *x, bool v) {
 	x->bitfield_1 = FIELD_SET(x->bitfield_1, ETX_ICO, v);
 }
-static inline bool is_etx_uco(struct qdma_desc_etx *x) {
+
+/** Checksum offload, probably UDP */
+static inline bool is_etx_uco(struct etx *x) {
 	return FIELD_GET(ETX_UCO, x->bitfield_1);
 }
-static inline void set_etx_uco(struct qdma_desc_etx *x, bool v) {
+static inline void set_etx_uco(struct etx *x, bool v) {
 	x->bitfield_1 = FIELD_SET(x->bitfield_1, ETX_UCO, v);
 }
-static inline bool is_etx_tco(struct qdma_desc_etx *x) {
+
+/** Checksum offload, probably TCP */
+static inline bool is_etx_tco(struct etx *x) {
 	return FIELD_GET(ETX_TCO, x->bitfield_1);
 }
-static inline void set_etx_tco(struct qdma_desc_etx *x, bool v) {
+static inline void set_etx_tco(struct etx *x, bool v) {
 	x->bitfield_1 = FIELD_SET(x->bitfield_1, ETX_TCO, v);
 }
-static inline bool is_etx_sco(struct qdma_desc_etx *x) {
+
+/** Unknown, maybe SCTP checksum offload */
+static inline bool is_etx_sco(struct etx *x) {
 	return FIELD_GET(ETX_SCO, x->bitfield_1);
 }
-static inline void set_etx_sco(struct qdma_desc_etx *x, bool v) {
+static inline void set_etx_sco(struct etx *x, bool v) {
 	x->bitfield_1 = FIELD_SET(x->bitfield_1, ETX_SCO, v);
 }
-static inline u8 get_etx_udf_pmap(struct qdma_desc_etx *x) {
+
+/** Unknown / unused */
+static inline u8 get_etx_udf_pmap(struct etx *x) {
 	return FIELD_GET(ETX_UDF_PMAP_MASK, x->bitfield_1);
 }
-static inline void set_etx_udf_pmap(struct qdma_desc_etx *x, u8 v) {
+static inline void set_etx_udf_pmap(struct etx *x, u8 v) {
 	x->bitfield_1 = FIELD_SET(x->bitfield_1, ETX_UDF_PMAP_MASK, v);
 }
-static inline enum etx_fport get_etx_fport(struct qdma_desc_etx *x) {
+
+/**
+ * Where in the Frame Engine to send the packet to QDMA0_CPU / QDMA1_CPU sends
+ * to CPU via the relevant QDMA engine. QDMA0_HWF and QDMA1_HWF goes to QDMA
+ * hardware forwarding. GDM1 is the LAN, GDM2 is the WAN, and PPE is the Packet
+ * Processing Engine.
+ */
+static inline enum etx_fport get_etx_fport(struct etx *x) {
 	return FIELD_GET(ETX_FPORT_MASK, x->bitfield_1);
 }
-static inline void set_etx_fport(struct qdma_desc_etx *x, enum etx_fport v) {
+static inline void set_etx_fport(struct etx *x, enum etx_fport v) {
 	x->bitfield_1 = FIELD_SET(x->bitfield_1, ETX_FPORT_MASK, v);
 }
-static inline bool is_etx_vlan_en(struct qdma_desc_etx *x) {
+
+/** If 1 then add a vlan header to the packet */
+static inline bool is_etx_vlan_en(struct etx *x) {
 	return FIELD_GET(ETX_VLAN_EN, x->bitfield_1);
 }
-static inline void set_etx_vlan_en(struct qdma_desc_etx *x, bool v) {
+static inline void set_etx_vlan_en(struct etx *x, bool v) {
 	x->bitfield_1 = FIELD_SET(x->bitfield_1, ETX_VLAN_EN, v);
 }
-static inline enum etx_vlan_type get_etx_vlan_type(struct qdma_desc_etx *x) {
+
+/** Which type of vlan to add to the packet header */
+static inline enum etx_vlan_type get_etx_vlan_type(struct etx *x) {
 	return FIELD_GET(ETX_VLAN_TYPE_MASK, x->bitfield_1);
 }
-static inline void set_etx_vlan_type(struct qdma_desc_etx *x, enum etx_vlan_type v) {
+static inline void set_etx_vlan_type(struct etx *x, enum etx_vlan_type v) {
 	x->bitfield_1 = FIELD_SET(x->bitfield_1, ETX_VLAN_TYPE_MASK, v);
 }
 
@@ -340,7 +380,7 @@ struct desc {
 	union desc_msg {
 		struct qdma_desc_erx erx;
 
-		struct qdma_desc_etx etx;
+		struct etx etx;
 
 		u32 raw[4];
 
@@ -398,5 +438,80 @@ static inline u16 get_desc_info_unknown1(struct desc_info *x) {
 static inline void set_desc_info_unknown1(struct desc_info *x, u16 v) {
 	x->bitfield_0 = FIELD_SET(x->bitfield_0, DESC_INFO_UNKNOWN1_MASK, v);
 }
+
+/** fwdesc: QDMA Hardware Forward Packet Descriptor */
+struct fwdesc {
+	/** fwdesc_pkt_addr: Physical (DMA) address of the packet */
+	u32 pkt_addr;
+
+	/** fwdesc_info:  */
+	struct fwdesc_info {
+		/**
+		 * See accessors:
+		 * is_fwdesc_info_ctx()
+		 * set_fwdesc_info_ctx()
+		 * is_fwdesc_info_ctx_ring()
+		 * set_fwdesc_info_ctx_ring()
+		 * get_fwdesc_info_ctx_idx()
+		 * set_fwdesc_info_ctx_idx()
+		 */
+		u16 bitfield_0;
+
+		/** fwdesc_info_pkt_len: Length of the packet in bytes */
+		u16 pkt_len;
+
+	} info;
+
+	/**
+	 * fwdesc_msg: This is either Ethernet RX, Ethernet TX, xPON RX, or xPON TX
+	 */
+	union fwdesc_msg {
+		struct etx etx;
+
+		u32 raw[2];
+
+	} msg;
+
+};
+
+/**
+ * Bitfield accessors for: fwdesc_info bitfield_0
+ */
+
+#define FWDESC_INFO_CTX					BIT(15)
+#define FWDESC_INFO_CTX_RING				BIT(12)
+#define FWDESC_INFO_CTX_IDX_MASK			GENMASK(11, 0)
+
+
+/** True if there is a context descriptor (i.e. it is send, not a forward) */
+static inline bool is_fwdesc_info_ctx(struct fwdesc_info *x) {
+	return FIELD_GET(FWDESC_INFO_CTX, x->bitfield_0);
+}
+static inline void set_fwdesc_info_ctx(struct fwdesc_info *x, bool v) {
+	x->bitfield_0 = FIELD_SET(x->bitfield_0, FWDESC_INFO_CTX, v);
+}
+
+/**
+ * If ctx is true then this is the number of the context ring (0 or 1) because
+ * there are 2 transmit rings.
+ */
+static inline bool is_fwdesc_info_ctx_ring(struct fwdesc_info *x) {
+	return FIELD_GET(FWDESC_INFO_CTX_RING, x->bitfield_0);
+}
+static inline void set_fwdesc_info_ctx_ring(struct fwdesc_info *x, bool v) {
+	x->bitfield_0 = FIELD_SET(x->bitfield_0, FWDESC_INFO_CTX_RING, v);
+}
+
+/**
+ * If ctx is true then this is the index within the TX ring of the context
+ * packet descriptor.
+ */
+static inline u16 get_fwdesc_info_ctx_idx(struct fwdesc_info *x) {
+	return FIELD_GET(FWDESC_INFO_CTX_IDX_MASK, x->bitfield_0);
+}
+static inline void set_fwdesc_info_ctx_idx(struct fwdesc_info *x, u16 v) {
+	x->bitfield_0 = FIELD_SET(x->bitfield_0, FWDESC_INFO_CTX_IDX_MASK, v);
+}
+
 
 #endif /* QDMA_DESC_H */

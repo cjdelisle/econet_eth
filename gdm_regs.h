@@ -161,7 +161,7 @@ struct gdm {
 	} mymac_msb;
 
 	/** gdm_stag_en: Add Special Tag on RX frames, 0 or 1 */
-	bool stag_en;
+	u32 stag_en;
 
 	/** gdm_len_th:  */
 	struct gdm_len_th {
