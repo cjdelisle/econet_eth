@@ -135,9 +135,9 @@ struct en751221_regs {
 	u32		unknown_zeroed[0x2000 / sizeof(u32)];
 
 	/* BFB58000 - BFB60000 */
-	u32		switch_regs[0x8000 / sizeof(u32)];
+	// u32		switch_regs[0x8000 / sizeof(u32)];
 };
-_Static_assert(sizeof(struct en751221_regs) == 0x10000, "en751221_regs size incorrect");
+// _Static_assert(sizeof(struct en751221_regs) == 0x10000, "en751221_regs size incorrect");
 
 static struct net_device *en75_get_sport_dev(struct en75_eth_pvt *eth,
 					     enum etx_fport sport)
@@ -189,23 +189,23 @@ int en75_rx_before_recv(struct en75_eth *eth, struct sk_buff *skb,
 
 int en75_port_set_macaddr(struct en75_eth *eth, enum etx_fport portn, const u8 *addr)
 {
-	struct en75_eth_pvt *ep = (struct en75_eth_pvt *) eth;
-	u32 __iomem *reg = ep->regs->switch_regs;
-	struct gdm_mymac_msb msb = {0};
-	struct gdm_mymac_lsb lsb = {0};
+// 	struct en75_eth_pvt *ep = (struct en75_eth_pvt *) eth;
+// 	u32 __iomem *reg = ep->regs->switch_regs;
+// 	struct gdm_mymac_msb msb = {0};
+// 	struct gdm_mymac_lsb lsb = {0};
 
-	if (portn != ETX_FPORT_GDM1)
-		return 0;
+// 	if (portn != ETX_FPORT_GDM1)
+// 		return 0;
 
-	msb.a = addr[0];
-	msb.b = addr[1];
-	lsb.c = addr[2];
-	lsb.d = addr[3];
-	lsb.e = addr[4];
-	lsb.f = addr[5];
+// 	msb.a = addr[0];
+// 	msb.b = addr[1];
+// 	lsb.c = addr[2];
+// 	lsb.d = addr[3];
+// 	lsb.e = addr[4];
+// 	lsb.f = addr[5];
 
-	en75_wreg(lsb, (struct gdm_mymac_lsb *)&reg[SWITCH_MAC_LO / 4]);
-	en75_wreg(msb, (struct gdm_mymac_msb *)&reg[SWITCH_MAC_HI / 4]);
+// 	en75_wreg(lsb, (struct gdm_mymac_lsb *)&reg[SWITCH_MAC_LO / 4]);
+// 	en75_wreg(msb, (struct gdm_mymac_msb *)&reg[SWITCH_MAC_HI / 4]);
 
 	return 0;
 }
@@ -382,9 +382,9 @@ static int en75_probe(struct platform_device *pdev)
 	eth->debug = en75_debugfs_init(&debug_conf);
 
 	/* Configure the MT7530 as a dumb switch */
-	en75_wreg(EN75_PMCR_CONFIG, &regs->switch_regs[MT753X_PMCR_P(5) / 4]);
-	en75_wreg(EN75_PMCR_CONFIG, &regs->switch_regs[MT753X_PMCR_P(6) / 4]);
-	en75_wreg(EN75_MFC_CONFIG, &regs->switch_regs[MT753X_MFC / 4]);
+	// en75_wreg(EN75_PMCR_CONFIG, &regs->switch_regs[MT753X_PMCR_P(5) / 4]);
+	// en75_wreg(EN75_PMCR_CONFIG, &regs->switch_regs[MT753X_PMCR_P(6) / 4]);
+	// en75_wreg(EN75_MFC_CONFIG, &regs->switch_regs[MT753X_MFC / 4]);
 
 	return 0;
 
