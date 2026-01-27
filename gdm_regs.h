@@ -126,55 +126,47 @@ struct gdm {
 	/** gdm_tx_shaper: Traffic shaper for TX */
 	u32 tx_shaper;
 
-	/** gdm_mymac_lsb: Mac address bytes [c,d,e,f] */
-	struct gdm_mymac_lsb {
-		/** gdm_mymac_lsb_c:  */
-		u8 c;
+	/**
+	 * gdm_mymac_lsb: Mac address bytes [c,d,e,f] (bytes 2-5 of MAC)
+	 * Register layout (32-bit word):
+	 * - Bits 31-24: MAC byte c (index 2)
+	 * - Bits 23-16: MAC byte d (index 3)
+	 * - Bits 15-8: MAC byte e (index 4)
+	 * - Bits 7-0: MAC byte f (index 5)
+	 * See accessors:
+	 * get_gdm_mymac_lsb_c/d/e/f()
+	 * set_gdm_mymac_lsb_c/d/e/f()
+	 */
+	struct gdm_mymac_lsb { u32 word; } mymac_lsb;
 
-		/** gdm_mymac_lsb_d:  */
-		u8 d;
-
-		/** gdm_mymac_lsb_e:  */
-		u8 e;
-
-		/** gdm_mymac_lsb_f:  */
-		u8 f;
-
-	} mymac_lsb;
-
-	/** gdm_mymac_msb: Mac address most bytes [a,b] and also matcher mask */
-	struct gdm_mymac_msb {
-		u8 unused_0;
-
-		/**
-		 * gdm_mymac_msb_lsb_mask: Least significant bit of MAC is matched on this
-		 * mask to decide if traffic is for us
-		 */
-		u8 lsb_mask;
-
-		/** gdm_mymac_msb_a:  */
-		u8 a;
-
-		/** gdm_mymac_msb_b:  */
-		u8 b;
-
-	} mymac_msb;
+	/**
+	 * gdm_mymac_msb: Mac address bytes [a,b] (bytes 0-1 of MAC) and mask
+	 * Register layout (32-bit word):
+	 * - Bits 31-24: unused
+	 * - Bits 23-16: lsb_mask (LSB matching mask)
+	 * - Bits 15-8: MAC byte a (index 0)
+	 * - Bits 7-0: MAC byte b (index 1)
+	 * See accessors:
+	 * get_gdm_mymac_msb_lsb_mask/a/b()
+	 * set_gdm_mymac_msb_lsb_mask/a/b()
+	 */
+	struct gdm_mymac_msb { u32 word; } mymac_msb;
 
 	/** gdm_stag_en: Add Special Tag on RX frames, 0 or 1 */
 	u32 stag_en;
 
-	/** gdm_len_th:  */
-	struct gdm_len_th {
-		/**
-		 * gdm_len_th_oversize_len: Packet larger than this is treated as oversize.
-		 * Max value is 0x3f00
-		 */
-		u16 oversize_len;
-
-		/** gdm_len_th_runt_len: Packet smaller than this is treated as a runt */
-		u16 runt_len;
-
-	} rx_len_threshold;
+	/**
+	 * gdm_len_th:
+	 * Register layout (32-bit word):
+	 * - Bits 31-16: OVERSIZE_LEN (packet larger than this is oversize, max 0x3f00)
+	 * - Bits 15-0: RUNT_LEN (packet smaller than this is a runt)
+	 * See accessors:
+	 * get_gdm_len_th_oversize_len()
+	 * set_gdm_len_th_oversize_len()
+	 * get_gdm_len_th_runt_len()
+	 * set_gdm_len_th_runt_len()
+	 */
+	struct gdm_len_th { u32 word; } rx_len_threshold;
 
 	/**
 	 * See accessors:
@@ -1213,6 +1205,89 @@ static inline void set_gdm_cl_cnt_rx(struct clear_counters *x, bool v) {
 }
 static inline void set_gdm_cl_cnt_tx(struct clear_counters *x, bool v) {
 	x->word = FIELD_SET(x->word, GDM_CL_CNT_TX, v);
+}
+
+/**
+ * Bitfield accessors for: gdm_mymac_lsb
+ * MAC address bytes c,d,e,f (indices 2-5)
+ */
+#define GDM_MYMAC_LSB_C_MASK				GENMASK(31, 24)
+#define GDM_MYMAC_LSB_D_MASK				GENMASK(23, 16)
+#define GDM_MYMAC_LSB_E_MASK				GENMASK(15, 8)
+#define GDM_MYMAC_LSB_F_MASK				GENMASK(7, 0)
+
+static inline u8 get_gdm_mymac_lsb_c(struct gdm_mymac_lsb *x) {
+	return FIELD_GET(GDM_MYMAC_LSB_C_MASK, x->word);
+}
+static inline void set_gdm_mymac_lsb_c(struct gdm_mymac_lsb *x, u8 v) {
+	x->word = FIELD_SET(x->word, GDM_MYMAC_LSB_C_MASK, v);
+}
+static inline u8 get_gdm_mymac_lsb_d(struct gdm_mymac_lsb *x) {
+	return FIELD_GET(GDM_MYMAC_LSB_D_MASK, x->word);
+}
+static inline void set_gdm_mymac_lsb_d(struct gdm_mymac_lsb *x, u8 v) {
+	x->word = FIELD_SET(x->word, GDM_MYMAC_LSB_D_MASK, v);
+}
+static inline u8 get_gdm_mymac_lsb_e(struct gdm_mymac_lsb *x) {
+	return FIELD_GET(GDM_MYMAC_LSB_E_MASK, x->word);
+}
+static inline void set_gdm_mymac_lsb_e(struct gdm_mymac_lsb *x, u8 v) {
+	x->word = FIELD_SET(x->word, GDM_MYMAC_LSB_E_MASK, v);
+}
+static inline u8 get_gdm_mymac_lsb_f(struct gdm_mymac_lsb *x) {
+	return FIELD_GET(GDM_MYMAC_LSB_F_MASK, x->word);
+}
+static inline void set_gdm_mymac_lsb_f(struct gdm_mymac_lsb *x, u8 v) {
+	x->word = FIELD_SET(x->word, GDM_MYMAC_LSB_F_MASK, v);
+}
+
+/**
+ * Bitfield accessors for: gdm_mymac_msb
+ * MAC address bytes a,b (indices 0-1) and LSB matching mask
+ */
+#define GDM_MYMAC_MSB_LSB_MASK_MASK			GENMASK(23, 16)
+#define GDM_MYMAC_MSB_A_MASK				GENMASK(15, 8)
+#define GDM_MYMAC_MSB_B_MASK				GENMASK(7, 0)
+
+static inline u8 get_gdm_mymac_msb_lsb_mask(struct gdm_mymac_msb *x) {
+	return FIELD_GET(GDM_MYMAC_MSB_LSB_MASK_MASK, x->word);
+}
+static inline void set_gdm_mymac_msb_lsb_mask(struct gdm_mymac_msb *x, u8 v) {
+	x->word = FIELD_SET(x->word, GDM_MYMAC_MSB_LSB_MASK_MASK, v);
+}
+static inline u8 get_gdm_mymac_msb_a(struct gdm_mymac_msb *x) {
+	return FIELD_GET(GDM_MYMAC_MSB_A_MASK, x->word);
+}
+static inline void set_gdm_mymac_msb_a(struct gdm_mymac_msb *x, u8 v) {
+	x->word = FIELD_SET(x->word, GDM_MYMAC_MSB_A_MASK, v);
+}
+static inline u8 get_gdm_mymac_msb_b(struct gdm_mymac_msb *x) {
+	return FIELD_GET(GDM_MYMAC_MSB_B_MASK, x->word);
+}
+static inline void set_gdm_mymac_msb_b(struct gdm_mymac_msb *x, u8 v) {
+	x->word = FIELD_SET(x->word, GDM_MYMAC_MSB_B_MASK, v);
+}
+
+/**
+ * Bitfield accessors for: gdm_len_th
+ * Register layout (32-bit word):
+ * - Bits 31-16: OVERSIZE_LEN (packet larger than this is treated as oversize)
+ * - Bits 15-0: RUNT_LEN (packet smaller than this is treated as a runt)
+ */
+#define GDM_LEN_TH_OVERSIZE_LEN_MASK			GENMASK(31, 16)
+#define GDM_LEN_TH_RUNT_LEN_MASK			GENMASK(15, 0)
+
+static inline u16 get_gdm_len_th_oversize_len(struct gdm_len_th *x) {
+	return FIELD_GET(GDM_LEN_TH_OVERSIZE_LEN_MASK, x->word);
+}
+static inline void set_gdm_len_th_oversize_len(struct gdm_len_th *x, u16 v) {
+	x->word = FIELD_SET(x->word, GDM_LEN_TH_OVERSIZE_LEN_MASK, v);
+}
+static inline u16 get_gdm_len_th_runt_len(struct gdm_len_th *x) {
+	return FIELD_GET(GDM_LEN_TH_RUNT_LEN_MASK, x->word);
+}
+static inline void set_gdm_len_th_runt_len(struct gdm_len_th *x, u16 v) {
+	x->word = FIELD_SET(x->word, GDM_LEN_TH_RUNT_LEN_MASK, v);
 }
 
 #endif

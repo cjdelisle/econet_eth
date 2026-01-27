@@ -83,12 +83,13 @@ static void en75_set_macaddr(struct en75_gdm_port *port, const u8 *addr)
 
 	scoped_guard(spinlock, &port->reg_lock) {
 		msb = en75_rreg(&port->regs->mymac_msb);
-		msb.a = addr[0];
-		msb.b = addr[1];
-		lsb.c = addr[2];
-		lsb.d = addr[3];
-		lsb.e = addr[4];
-		lsb.f = addr[5];
+		lsb = en75_rreg(&port->regs->mymac_lsb);
+		set_gdm_mymac_msb_a(&msb, addr[0]);
+		set_gdm_mymac_msb_b(&msb, addr[1]);
+		set_gdm_mymac_lsb_c(&lsb, addr[2]);
+		set_gdm_mymac_lsb_d(&lsb, addr[3]);
+		set_gdm_mymac_lsb_e(&lsb, addr[4]);
+		set_gdm_mymac_lsb_f(&lsb, addr[5]);
 		en75_wreg(lsb, &port->regs->mymac_lsb);
 		en75_wreg(msb, &port->regs->mymac_msb);
 	}
@@ -154,8 +155,8 @@ static int en75_dev_open(struct net_device *dev)
 
 	guard(spinlock)(&port->reg_lock);
 	rlt = en75_rreg(&port->regs->rx_len_threshold);
-	rlt.runt_len = 60;
-	rlt.oversize_len = ETH_HLEN + dev->mtu + ETH_FCS_LEN;
+	set_gdm_len_th_runt_len(&rlt, 60);
+	set_gdm_len_th_oversize_len(&rlt, ETH_HLEN + dev->mtu + ETH_FCS_LEN);
 	en75_wreg(rlt, &port->regs->rx_len_threshold);
 
 	return en75_qdma_use(port->qdma);
@@ -177,7 +178,7 @@ static int en75_dev_change_mtu(struct net_device *dev, int mtu)
 
 	guard(spinlock)(&port->reg_lock);
 	rlt = en75_rreg(&port->regs->rx_len_threshold);
-	rlt.oversize_len = ETH_HLEN + mtu + ETH_FCS_LEN;
+	set_gdm_len_th_oversize_len(&rlt, ETH_HLEN + mtu + ETH_FCS_LEN);
 	en75_wreg(rlt, &port->regs->rx_len_threshold);
 
 	WRITE_ONCE(dev->mtu, mtu);

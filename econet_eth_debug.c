@@ -43,11 +43,11 @@ static void print_erx(struct seq_file *m, struct qdma_desc_erx *erx)
 		is_erx_untag(erx) ? " UNTAG" : ""
 	);
 
-	if (erx->sp_tag) {
-		seq_printf(m, " sp_tag=%.4x", erx->sp_tag);
+	if (get_erx_sp_tag(erx)) {
+		seq_printf(m, " sp_tag=%.4x", get_erx_sp_tag(erx));
 	}
-	if (erx->tci) {
-		seq_printf(m, " tci=%.4x", erx->tci);
+	if (get_erx_tci(erx)) {
+		seq_printf(m, " tci=%.4x", get_erx_tci(erx));
 	}
 	if (erx->unknown0) {
 		seq_printf(m, " unknown0=%.8x", erx->unknown0);
@@ -88,14 +88,14 @@ static void print_etx(struct seq_file *m, struct etx *etx)
 	if (is_etx_vlan_en(etx)) {
 		seq_printf(m, " vlan_type=%.2x", get_etx_vlan_type(etx));
 	}
-	if (etx->vlan_tag) {
-		seq_printf(m, " vlan_tag=%.4x", etx->vlan_tag);
+	if (get_etx_vlan_tag(etx)) {
+		seq_printf(m, " vlan_tag=%.4x", get_etx_vlan_tag(etx));
 	}
 }
 
 static void print_desc(struct seq_file *m, struct desc *desc) {
 	seq_printf(m, "len=%d\taddr=%.8x next=%d%s%s%s",
-		desc->info.pkt_len,
+		get_desc_info_pkt_len(&desc->info),
 		desc->pkt_addr,
 		desc->next_idx,
 		is_desc_info_done(&desc->info) ? " DONE" : "",
@@ -113,7 +113,7 @@ static void print_desc(struct seq_file *m, struct desc *desc) {
 static void print_fwdesc(struct seq_file *m, struct fwdesc *desc)
 {
 	seq_printf(m, "len=%d\taddr=%.8x%s",
-		desc->info.pkt_len,
+		get_fwdesc_info_pkt_len(&desc->info),
 		desc->pkt_addr,
 		!is_fwdesc_info_ctx(&desc->info) ? " FWD" : ""
 	);
@@ -141,9 +141,10 @@ static int en75_qdma_hwf(struct seq_file *m, void *v)
 	free_desc_n = en75_rreg(&regs->debug.hwf_desc_free);
 
 	seq_printf(m, "QDMA FWD Descriptors used=%d total=%d\n",
-		cfg1.fwd_desc_n - free_desc_n, cfg1.fwd_desc_n);
-	
-	for (i = 0; i < cfg1.fwd_desc_n; i++) {
+		get_qregs_hwf_cfg1_fwd_desc_n(&cfg1) - free_desc_n,
+		get_qregs_hwf_cfg1_fwd_desc_n(&cfg1));
+
+	for (i = 0; i < get_qregs_hwf_cfg1_fwd_desc_n(&cfg1); i++) {
 		struct fwdesc *desc = &debug->config->hwf_desc[i];
 		seq_printf(m, "  %d ", i);
 		print_fwdesc(m, desc);
@@ -245,9 +246,9 @@ static int en75_qdma_regs(struct seq_file *m, void *v)
 
 		seq_printf(m,
 			"hwf_cfg1=%.08x fwd_desc_n=%u overhead=%u%s%s\n",
-			en75_word(cfg),
-			cfg.fwd_desc_n,
-			cfg.overhead,
+			cfg.word,
+			get_qregs_hwf_cfg1_fwd_desc_n(&cfg),
+			get_qregs_hwf_cfg1_overhead(&cfg),
 			is_qregs_hwf_cfg1_start(&cfg)       ? " +start"        : "",
 			is_qregs_hwf_cfg1_overhead_en(&cfg) ? " +overhead_en" : ""
 		);
@@ -266,9 +267,9 @@ static int en75_qdma_regs(struct seq_file *m, void *v)
 
 		seq_printf(m,
 			"\tconfig=%.08x size=%u int_threshold=%u\n",
-			en75_word(cfg),
-			cfg.size,
-			cfg.int_threshold
+			cfg.word,
+			get_qregs_doneq_cfg_size(&cfg),
+			get_qregs_doneq_cfg_int_threshold(&cfg)
 		);
 	}
 	seq_printf(m, "\tpop_back=%.08x\n", en75_rreg(&regs->done_queue.pop_back));
@@ -277,9 +278,9 @@ static int en75_qdma_regs(struct seq_file *m, void *v)
 
 		seq_printf(m,
 			"\tstate=%.08x len=%u head=%u\n",
-			en75_word(st),
-			st.length,
-			st.head_index
+			st.word,
+			get_qregs_doneq_state_length(&st),
+			get_qregs_doneq_state_head_index(&st)
 		);
 	}
 	seq_printf(m, "\twait_time=%.08x\n", en75_rreg(&regs->done_queue.wait_time));
@@ -368,9 +369,9 @@ static int en75_qdma_regs(struct seq_file *m, void *v)
 
 		seq_printf(m,
 			"rxring_size=%.08x rxring0=%u rxring1=%u\n",
-			en75_word(cfg),
-			cfg.rxring0_size,
-			cfg.rxring1_size
+			cfg.word,
+			get_qregs_rxring_size_ring0(&cfg),
+			get_qregs_rxring_size_ring1(&cfg)
 		);
 	}
 
@@ -379,9 +380,9 @@ static int en75_qdma_regs(struct seq_file *m, void *v)
 
 		seq_printf(m,
 			"rxring_low=%.08x rxring0_low=%u rxring1_low=%u\n",
-			en75_word(cfg),
-			cfg.rxring0_low,
-			cfg.rxring1_low
+			cfg.word,
+			get_qregs_rxring_low_ring0(&cfg),
+			get_qregs_rxring_low_ring1(&cfg)
 		);
 	}
 

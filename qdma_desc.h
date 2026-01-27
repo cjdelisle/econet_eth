@@ -44,11 +44,10 @@ struct etx {
 	 * set_etx_vlan_en()
 	 * get_etx_vlan_type()
 	 * set_etx_vlan_type()
+	 * get_etx_vlan_tag()
+	 * set_etx_vlan_tag()
 	 */
-	u16 bitfield_1;
-
-	/** etx_vlan_tag: The VLAN number, if vlan_en is set */
-	u16 vlan_tag;
+	u32 bitfield_1;
 
 };
 
@@ -127,14 +126,15 @@ enum etx_vlan_type {
 	ETX_VLAN_TYPE_UNKNOWN				= 3,
 };
 
-#define ETX_ICO						BIT(15)
-#define ETX_UCO						BIT(14)
-#define ETX_TCO						BIT(13)
-#define ETX_SCO						BIT(12)
-#define ETX_UDF_PMAP_MASK				GENMASK(11, 6)
-#define ETX_FPORT_MASK					GENMASK(5, 3)
-#define ETX_VLAN_EN					BIT(2)
-#define ETX_VLAN_TYPE_MASK				GENMASK(1, 0)
+#define ETX_ICO						BIT(31)
+#define ETX_UCO						BIT(30)
+#define ETX_TCO						BIT(29)
+#define ETX_SCO						BIT(28)
+#define ETX_UDF_PMAP_MASK				GENMASK(27, 22)
+#define ETX_FPORT_MASK					GENMASK(21, 19)
+#define ETX_VLAN_EN					BIT(18)
+#define ETX_VLAN_TYPE_MASK				GENMASK(17, 16)
+#define ETX_VLAN_TAG_MASK				GENMASK(15, 0)
 
 
 /** Checksum offload, probably IP */
@@ -206,9 +206,17 @@ static inline void set_etx_vlan_type(struct etx *x, enum etx_vlan_type v) {
 	x->bitfield_1 = FIELD_SET(x->bitfield_1, ETX_VLAN_TYPE_MASK, v);
 }
 
+/** The VLAN number, if vlan_en is set */
+static inline u16 get_etx_vlan_tag(struct etx *x) {
+	return FIELD_GET(ETX_VLAN_TAG_MASK, x->bitfield_1);
+}
+static inline void set_etx_vlan_tag(struct etx *x, u16 v) {
+	x->bitfield_1 = FIELD_SET(x->bitfield_1, ETX_VLAN_TAG_MASK, v);
+}
+
 /**
  * qdma_desc_erx
- * 
+ *
  *     3                     2                   1                   0
  *     1 0 9 8 7 6 5 4 3 2 1 0 9 8 7 6 5 4 3 2 1 0 9 8 7 6 5 4 3 2 1 0
  *    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
@@ -220,10 +228,10 @@ static inline void set_etx_vlan_type(struct etx *x, enum etx_vlan_type v) {
  *    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
  * 12 |             sp_tag            |              tci              |
  *    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
- * 16 
- * 
+ * 16
+ *
  * @unknown0 (32 bit): Unknown / unused field, first word in descriptor
- * @bitfield_0 (32 bit): 
+ * @bitfield_0 (32 bit):
  *   @unknown1 "nknwn" (bits 31..29): Revision number? (unused)
  *   @ip6 "I" (bit 28): IPv6 packet indicator
  *   @ip4 "P" (bit 27): IPv4 packet indicator
@@ -235,19 +243,19 @@ static inline void set_etx_vlan_type(struct etx *x, enum etx_vlan_type v) {
  *                         needs testing
  *   @crsn (bits 18..14): Most likely a MediaTek PPE CPU_REASON
  *   @ppe_entry (bits 13..0): PPE (Packet Processing Engine) entry index
- * @bitfield_1 (32 bit): 
+ * @bitfield_1 (32 bit):
  *   @unknown2 (bits 31..1): Reserved
  *   @untag "N" (bit 0): VLAN untag flag
- * @sp_tag (16 bit): MediaTek "Special Tag" for switch port/VLAN encoding
- * @tci (16 bit): The TCI of any vlan tag that was unpopped beneath the MTK
- *                "Special Tag"
+ * @bitfield_3 (32 bit):
+ *   @sp_tag (bits 31..16): MediaTek "Special Tag" for switch port/VLAN encoding
+ *   @tci (bits 15..0): The TCI of any vlan tag that was unpopped beneath the
+ *                      MTK "Special Tag"
  */
 struct qdma_desc_erx {
 	u32 unknown0;
 	u32 bitfield_0;
 	u32 bitfield_1;
-	u16 sp_tag;
-	u16 tci;
+	u32 bitfield_3;
 };
 
 /* qdma_desc_erx bitfield_0 */
@@ -342,6 +350,24 @@ static inline void set_erx_untag(struct qdma_desc_erx *x, bool v) {
 	x->bitfield_1 = FIELD_SET(x->bitfield_1, ERX_UNTAG, v);
 }
 
+/* qdma_desc_erx bitfield_3 */
+
+#define ERX_SP_TAG_MASK					GENMASK(31, 16)
+#define ERX_TCI_MASK					GENMASK(15, 0)
+
+static inline u16 get_erx_sp_tag(struct qdma_desc_erx *x) {
+	return FIELD_GET(ERX_SP_TAG_MASK, x->bitfield_3);
+}
+static inline void set_erx_sp_tag(struct qdma_desc_erx *x, u16 v) {
+	x->bitfield_3 = FIELD_SET(x->bitfield_3, ERX_SP_TAG_MASK, v);
+}
+static inline u16 get_erx_tci(struct qdma_desc_erx *x) {
+	return FIELD_GET(ERX_TCI_MASK, x->bitfield_3);
+}
+static inline void set_erx_tci(struct qdma_desc_erx *x, u16 v) {
+	x->bitfield_3 = FIELD_SET(x->bitfield_3, ERX_TCI_MASK, v);
+}
+
 /** desc: QDMA Packet Descriptor */
 struct desc {
 	/**
@@ -362,11 +388,10 @@ struct desc {
 		 * set_desc_info_nls()
 		 * get_desc_info_unknown1()
 		 * set_desc_info_unknown1()
+		 * get_desc_info_pkt_len()
+		 * set_desc_info_pkt_len()
 		 */
-		u16 bitfield_0;
-
-		/** desc_info_pkt_len: Length of the packet in bytes */
-		u16 pkt_len;
+		u32 word;
 
 	} info;
 
@@ -389,13 +414,14 @@ struct desc {
 };
 
 /**
- * Bitfield accessors for: desc_info bitfield_0
+ * Bitfield accessors for: desc_info word
  */
 
-#define DESC_INFO_DONE					BIT(15)
-#define DESC_INFO_DROPPED				BIT(14)
-#define DESC_INFO_NLS					BIT(13)
-#define DESC_INFO_UNKNOWN1_MASK				GENMASK(12, 0)
+#define DESC_INFO_DONE					BIT(31)
+#define DESC_INFO_DROPPED				BIT(30)
+#define DESC_INFO_NLS					BIT(29)
+#define DESC_INFO_UNKNOWN1_MASK				GENMASK(28, 16)
+#define DESC_INFO_PKT_LEN_MASK				GENMASK(15, 0)
 
 
 /**
@@ -407,36 +433,44 @@ struct desc {
  * this flag can be deactivated.
  */
 static inline bool is_desc_info_done(struct desc_info *x) {
-	return FIELD_GET(DESC_INFO_DONE, x->bitfield_0);
+	return FIELD_GET(DESC_INFO_DONE, x->word);
 }
 static inline void set_desc_info_done(struct desc_info *x, bool v) {
-	x->bitfield_0 = FIELD_SET(x->bitfield_0, DESC_INFO_DONE, v);
+	x->word = FIELD_SET(x->word, DESC_INFO_DONE, v);
 }
 
 /** Packet has been dropped */
 static inline bool is_desc_info_dropped(struct desc_info *x) {
-	return FIELD_GET(DESC_INFO_DROPPED, x->bitfield_0);
+	return FIELD_GET(DESC_INFO_DROPPED, x->word);
 }
 static inline void set_desc_info_dropped(struct desc_info *x, bool v) {
-	x->bitfield_0 = FIELD_SET(x->bitfield_0, DESC_INFO_DROPPED, v);
+	x->word = FIELD_SET(x->word, DESC_INFO_DROPPED, v);
 }
 
 /** Unknown meaning but used on EN761627 and EN7580 */
 static inline bool is_desc_info_nls(struct desc_info *x) {
-	return FIELD_GET(DESC_INFO_NLS, x->bitfield_0);
+	return FIELD_GET(DESC_INFO_NLS, x->word);
 }
 static inline void set_desc_info_nls(struct desc_info *x, bool v) {
-	x->bitfield_0 = FIELD_SET(x->bitfield_0, DESC_INFO_NLS, v);
+	x->word = FIELD_SET(x->word, DESC_INFO_NLS, v);
 }
 
 /**
  * Reserved / unused, we still export the symbol so we can show it in debugging
  */
 static inline u16 get_desc_info_unknown1(struct desc_info *x) {
-	return FIELD_GET(DESC_INFO_UNKNOWN1_MASK, x->bitfield_0);
+	return FIELD_GET(DESC_INFO_UNKNOWN1_MASK, x->word);
 }
 static inline void set_desc_info_unknown1(struct desc_info *x, u16 v) {
-	x->bitfield_0 = FIELD_SET(x->bitfield_0, DESC_INFO_UNKNOWN1_MASK, v);
+	x->word = FIELD_SET(x->word, DESC_INFO_UNKNOWN1_MASK, v);
+}
+
+/** Length of the packet in bytes */
+static inline u16 get_desc_info_pkt_len(struct desc_info *x) {
+	return FIELD_GET(DESC_INFO_PKT_LEN_MASK, x->word);
+}
+static inline void set_desc_info_pkt_len(struct desc_info *x, u16 v) {
+	x->word = FIELD_SET(x->word, DESC_INFO_PKT_LEN_MASK, v);
 }
 
 /** fwdesc: QDMA Hardware Forward Packet Descriptor */
@@ -454,11 +488,10 @@ struct fwdesc {
 		 * set_fwdesc_info_ctx_ring()
 		 * get_fwdesc_info_ctx_idx()
 		 * set_fwdesc_info_ctx_idx()
+		 * get_fwdesc_info_pkt_len()
+		 * set_fwdesc_info_pkt_len()
 		 */
-		u16 bitfield_0;
-
-		/** fwdesc_info_pkt_len: Length of the packet in bytes */
-		u16 pkt_len;
+		u32 word;
 
 	} info;
 
@@ -475,20 +508,21 @@ struct fwdesc {
 };
 
 /**
- * Bitfield accessors for: fwdesc_info bitfield_0
+ * Bitfield accessors for: fwdesc_info word
  */
 
-#define FWDESC_INFO_CTX					BIT(15)
-#define FWDESC_INFO_CTX_RING				BIT(12)
-#define FWDESC_INFO_CTX_IDX_MASK			GENMASK(11, 0)
+#define FWDESC_INFO_CTX					BIT(31)
+#define FWDESC_INFO_CTX_RING				BIT(28)
+#define FWDESC_INFO_CTX_IDX_MASK			GENMASK(27, 16)
+#define FWDESC_INFO_PKT_LEN_MASK			GENMASK(15, 0)
 
 
 /** True if there is a context descriptor (i.e. it is send, not a forward) */
 static inline bool is_fwdesc_info_ctx(struct fwdesc_info *x) {
-	return FIELD_GET(FWDESC_INFO_CTX, x->bitfield_0);
+	return FIELD_GET(FWDESC_INFO_CTX, x->word);
 }
 static inline void set_fwdesc_info_ctx(struct fwdesc_info *x, bool v) {
-	x->bitfield_0 = FIELD_SET(x->bitfield_0, FWDESC_INFO_CTX, v);
+	x->word = FIELD_SET(x->word, FWDESC_INFO_CTX, v);
 }
 
 /**
@@ -496,10 +530,10 @@ static inline void set_fwdesc_info_ctx(struct fwdesc_info *x, bool v) {
  * there are 2 transmit rings.
  */
 static inline bool is_fwdesc_info_ctx_ring(struct fwdesc_info *x) {
-	return FIELD_GET(FWDESC_INFO_CTX_RING, x->bitfield_0);
+	return FIELD_GET(FWDESC_INFO_CTX_RING, x->word);
 }
 static inline void set_fwdesc_info_ctx_ring(struct fwdesc_info *x, bool v) {
-	x->bitfield_0 = FIELD_SET(x->bitfield_0, FWDESC_INFO_CTX_RING, v);
+	x->word = FIELD_SET(x->word, FWDESC_INFO_CTX_RING, v);
 }
 
 /**
@@ -507,11 +541,18 @@ static inline void set_fwdesc_info_ctx_ring(struct fwdesc_info *x, bool v) {
  * packet descriptor.
  */
 static inline u16 get_fwdesc_info_ctx_idx(struct fwdesc_info *x) {
-	return FIELD_GET(FWDESC_INFO_CTX_IDX_MASK, x->bitfield_0);
+	return FIELD_GET(FWDESC_INFO_CTX_IDX_MASK, x->word);
 }
 static inline void set_fwdesc_info_ctx_idx(struct fwdesc_info *x, u16 v) {
-	x->bitfield_0 = FIELD_SET(x->bitfield_0, FWDESC_INFO_CTX_IDX_MASK, v);
+	x->word = FIELD_SET(x->word, FWDESC_INFO_CTX_IDX_MASK, v);
 }
 
+/** Length of the packet in bytes */
+static inline u16 get_fwdesc_info_pkt_len(struct fwdesc_info *x) {
+	return FIELD_GET(FWDESC_INFO_PKT_LEN_MASK, x->word);
+}
+static inline void set_fwdesc_info_pkt_len(struct fwdesc_info *x, u16 v) {
+	x->word = FIELD_SET(x->word, FWDESC_INFO_PKT_LEN_MASK, v);
+}
 
 #endif /* QDMA_DESC_H */

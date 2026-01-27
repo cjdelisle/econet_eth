@@ -90,6 +90,7 @@
 
 struct en75_eth_pvt {
 	struct en75_eth			pub;
+	const struct en75_soc_data	*soc;
 	struct net_device		*ports[EN75_NUM_GDM_PORTS];
 	struct en751221_regs __iomem	*regs;
 	struct reset_control		*reset;
@@ -176,7 +177,7 @@ int en75_rx_before_recv(struct en75_eth *eth, struct sk_buff *skb,
 		// and hope that the tag-basd DSA works.
 		//port_num = (sp_tag & 0x7); /*switch port id*/
 		#if 0
-		u32 sptag = desc.t.erx.sp_tag;
+		u32 sptag = get_erx_sp_tag(&desc.t.erx);
 		if (sptag < ARRAY_SIZE(port->dsa_meta) &&
 			port->dsa_meta[sptag])
 			skb_dst_set_noref(q->skb,
@@ -191,18 +192,18 @@ int en75_port_set_macaddr(struct en75_eth *eth, enum etx_fport portn, const u8 *
 {
 	struct en75_eth_pvt *ep = (struct en75_eth_pvt *) eth;
 	u32 __iomem *reg = ep->regs->switch_regs;
-	struct gdm_mymac_msb msb = {0};
-	struct gdm_mymac_lsb lsb = {0};
+	struct gdm_mymac_msb msb = { .word = 0 };
+	struct gdm_mymac_lsb lsb = { .word = 0 };
 
 	if (portn != ETX_FPORT_GDM1)
 		return 0;
 
-	msb.a = addr[0];
-	msb.b = addr[1];
-	lsb.c = addr[2];
-	lsb.d = addr[3];
-	lsb.e = addr[4];
-	lsb.f = addr[5];
+	set_gdm_mymac_msb_a(&msb, addr[0]);
+	set_gdm_mymac_msb_b(&msb, addr[1]);
+	set_gdm_mymac_lsb_c(&lsb, addr[2]);
+	set_gdm_mymac_lsb_d(&lsb, addr[3]);
+	set_gdm_mymac_lsb_e(&lsb, addr[4]);
+	set_gdm_mymac_lsb_f(&lsb, addr[5]);
 
 	en75_wreg(lsb, (struct gdm_mymac_lsb *)&reg[SWITCH_MAC_LO / 4]);
 	en75_wreg(msb, (struct gdm_mymac_msb *)&reg[SWITCH_MAC_HI / 4]);
@@ -255,7 +256,8 @@ static int en75_init_port(struct en75_eth_pvt *eth, struct device_node *np)
 	return 0;
 }
 
-static void en75_prepare_qdma_cfg(struct en75_qdma_cfg *cfg)
+static void en75_prepare_qdma_cfg(struct en75_qdma_cfg *cfg,
+				  const struct en75_soc_data *soc)
 {
 	memset(cfg, 0, sizeof(*cfg));
 	for (int i = 0; i < QDMA_NUM_CHAINS; i++)
@@ -267,6 +269,7 @@ static void en75_prepare_qdma_cfg(struct en75_qdma_cfg *cfg)
 	cfg->fwd_max_packet_size = EN75_MAX_PACKET_SIZE;
 	cfg->fwd_low_threshold = 32;
 	cfg->num_fwd_descs = 256;
+	cfg->soc = soc;
 }
 
 static void en75_remove(struct platform_device *pdev)
@@ -306,6 +309,10 @@ static int en75_probe(struct platform_device *pdev)
 	eth = devm_kzalloc(&pdev->dev, sizeof(*eth), GFP_KERNEL);
 	if (!eth)
 		return -ENOMEM;
+
+	eth->soc = of_device_get_match_data(&pdev->dev);
+	if (!eth->soc)
+		return dev_err_probe(&pdev->dev, -EINVAL, "No matching SoC data\n");
 
 	eth->pub.dev = &pdev->dev;
 	platform_set_drvdata(pdev, eth);
@@ -352,7 +359,7 @@ static int en75_probe(struct platform_device *pdev)
 	BUILD_BUG_ON(ARRAY_SIZE(eth->qdma) != ARRAY_SIZE(regs->qdma_regs));
 	BUILD_BUG_ON(ARRAY_SIZE(eth->qdma) != ARRAY_SIZE(eth->qdma_irq) * QDMA_NUM_IRQS);
 	for (i = 0; i < ARRAY_SIZE(eth->qdma); i++) {
-		en75_prepare_qdma_cfg(&cfg);
+		en75_prepare_qdma_cfg(&cfg, eth->soc);
 		eth->qdma[i] = en75_qdma_new(&eth->pub, &regs->qdma_regs[i], i,
 					     &eth->qdma_irq[i * QDMA_NUM_IRQS],
 					     QDMA_NUM_IRQS, &cfg,
@@ -393,8 +400,17 @@ error:
 	return err;
 }
 
+static const struct en75_soc_data en751221_soc_data = {
+	.dscp_byte_swap = true,
+};
+
+static const struct en75_soc_data en7528_soc_data = {
+	.dscp_byte_swap = false,
+};
+
 static const struct of_device_id of_en75_match[] = {
-	{ .compatible = "econet,en751221-eth" },
+	{ .compatible = "econet,en751221-eth", .data = &en751221_soc_data },
+	{ .compatible = "econet,en7528-eth", .data = &en7528_soc_data },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, of_en75_match);

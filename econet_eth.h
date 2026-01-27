@@ -14,6 +14,10 @@
 
 struct en75_debug;
 
+struct en75_soc_data {
+	bool dscp_byte_swap;
+};
+
 /* Number of QDMA engines in this ethernet device. */
 #define EN75_NUM_QDMA		2
 
@@ -178,6 +182,7 @@ struct en75_qdma_cfg {
 	int num_fwd_descs;
 	int fwd_max_packet_size;
 	int fwd_low_threshold;
+	const struct en75_soc_data *soc;
 };
 
 struct en75_qdma;

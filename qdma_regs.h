@@ -113,27 +113,19 @@ struct qregs {
 
 	u32 unused_0;
 
-	/** qregs_hwf_cfg1: Hardware forwarding configuration (also called LMGR) */
-	struct qregs_hwf_cfg1 {
-		/**
-		 * See accessors:
-		 * is_qregs_hwf_cfg1_start()
-		 * set_qregs_hwf_cfg1_start()
-		 * is_qregs_hwf_cfg1_overhead_en()
-		 * set_qregs_hwf_cfg1_overhead_en()
-		 */
-		u8 bitfield_0;
-
-		/**
-		 * qregs_hwf_cfg1_overhead: Amount of overhead to add to packet size for
-		 * accounting
-		 */
-		u8 overhead;
-
-		/** qregs_hwf_cfg1_fwd_desc_n: Number of forward descriptors to use. */
-		u16 fwd_desc_n;
-
-	} hwf_cfg1;
+	/**
+	 * qregs_hwf_cfg1: Hardware forwarding configuration (also called LMGR)
+	 * See accessors:
+	 * is_qregs_hwf_cfg1_start()
+	 * set_qregs_hwf_cfg1_start()
+	 * is_qregs_hwf_cfg1_overhead_en()
+	 * set_qregs_hwf_cfg1_overhead_en()
+	 * get_qregs_hwf_cfg1_overhead()
+	 * set_qregs_hwf_cfg1_overhead()
+	 * get_qregs_hwf_cfg1_fwd_desc_n()
+	 * set_qregs_hwf_cfg1_fwd_desc_n()
+	 */
+	struct qregs_hwf_cfg1 { u32 word; } hwf_cfg1;
 
 	u8 unused_1[12];
 
@@ -162,21 +154,15 @@ struct qregs {
 		/** qregs_doneq_addr:  */
 		dma_addr_t address;
 
-		/** qregs_doneq_cfg:  */
-		struct qregs_doneq_cfg {
-			/**
-			 * qregs_doneq_cfg_intt: When done queue is this full, fire an interrupt, max
-			 * 4095
-			 */
-			u16 int_threshold;
-
-			/**
-			 * qregs_doneq_cfg_sz: Size of the done queue buffer in 4 byte units, max
-			 * 4095
-			 */
-			u16 size;
-
-		} config;
+		/**
+		 * qregs_doneq_cfg:
+		 * See accessors:
+		 * get_qregs_doneq_cfg_int_threshold()
+		 * set_qregs_doneq_cfg_int_threshold()
+		 * get_qregs_doneq_cfg_size()
+		 * set_qregs_doneq_cfg_size()
+		 */
+		struct qregs_doneq_cfg { u32 word; } config;
 
 		/**
 		 * qregs_doneq_pop_back: Pop this number of items from the back of the the
@@ -184,15 +170,13 @@ struct qregs {
 		 */
 		u32 pop_back;
 
-		/** qregs_doneq_state:  */
-		struct qregs_doneq_state {
-			/** qregs_doneq_state_len: Number of items waiting in the queue */
-			u16 length;
-
-			/** qregs_doneq_state_head: Index of the first item in the list */
-			u16 head_index;
-
-		} state;
+		/**
+		 * qregs_doneq_state:
+		 * See accessors:
+		 * get_qregs_doneq_state_length()
+		 * get_qregs_doneq_state_head_index()
+		 */
+		struct qregs_doneq_state { u32 word; } state;
 
 		/**
 		 * qregs_doneq_wait_time: If there is anything in the queue, fire an interrupt
@@ -392,31 +376,25 @@ struct qregs {
 
 	} debug;
 
-	/** qregs_rxring_size:  */
-	struct qregs_rxring_size {
-		/** qregs_rxring_size_rxring0_size: Size of RX ring zero, maximum 4095 */
-		u16 rxring0_size;
+	/**
+	 * qregs_rxring_size:
+	 * See accessors:
+	 * get_qregs_rxring_size_ring0()
+	 * set_qregs_rxring_size_ring0()
+	 * get_qregs_rxring_size_ring1()
+	 * set_qregs_rxring_size_ring1()
+	 */
+	struct qregs_rxring_size { u32 word; } rxring_size;
 
-		/** qregs_rxring_size_rxring1_size: Size of ring one, maximum 4095 */
-		u16 rxring1_size;
-
-	} rxring_size;
-
-	/** qregs_rxring_low:  */
-	struct qregs_rxring_low {
-		/**
-		 * qregs_rxring_low_rxring0_low: Trigger interrupt when number of free RX
-		 * descs <= this, maximum 4095
-		 */
-		u16 rxring0_low;
-
-		/**
-		 * qregs_rxring_low_rxring1_low: Trigger interrupt when number of free RX
-		 * descs <= this, maximum 4095
-		 */
-		u16 rxring1_low;
-
-	} rxring_low;
+	/**
+	 * qregs_rxring_low:
+	 * See accessors:
+	 * get_qregs_rxring_low_ring0()
+	 * set_qregs_rxring_low_ring0()
+	 * get_qregs_rxring_low_ring1()
+	 * set_qregs_rxring_low_ring1()
+	 */
+	struct qregs_rxring_low { u32 word; } rxring_low;
 
 	/** qregs_qchain1:  */
 	struct qchain_regs qchain1;
@@ -744,27 +722,50 @@ static inline void set_qregs_hwf_cfg_low_th(struct hwf_cfg *x, u16 v) {
 }
 
 /**
- * Bitfield accessors for: qregs_hwf_cfg1 bitfield_0
+ * Bitfield accessors for: qregs_hwf_cfg1
+ * Register layout (32-bit word):
+ * - Bit 31: START
+ * - Bit 24: OVERHEAD_EN
+ * - Bits 23-16: OVERHEAD (8 bits)
+ * - Bits 15-0: FWD_DESC_N (16 bits)
  */
 
-#define QREGS_HWF_CFG1_START				BIT(7)
-#define QREGS_HWF_CFG1_OVERHEAD_EN			BIT(0)
+#define QREGS_HWF_CFG1_START				BIT(31)
+#define QREGS_HWF_CFG1_OVERHEAD_EN			BIT(24)
+#define QREGS_HWF_CFG1_OVERHEAD_MASK			GENMASK(23, 16)
+#define QREGS_HWF_CFG1_FWD_DESC_N_MASK			GENMASK(15, 0)
 
 
 /** Start up the hardware forwarding subsystem */
 static inline bool is_qregs_hwf_cfg1_start(struct qregs_hwf_cfg1 *x) {
-	return FIELD_GET(QREGS_HWF_CFG1_START, x->bitfield_0);
+	return FIELD_GET(QREGS_HWF_CFG1_START, x->word);
 }
 static inline void set_qregs_hwf_cfg1_start(struct qregs_hwf_cfg1 *x, bool v) {
-	x->bitfield_0 = FIELD_SET(x->bitfield_0, QREGS_HWF_CFG1_START, v);
+	x->word = FIELD_SET(x->word, QREGS_HWF_CFG1_START, v);
 }
 
 /** When set, add overhead to packet size for accounting purposes */
 static inline bool is_qregs_hwf_cfg1_overhead_en(struct qregs_hwf_cfg1 *x) {
-	return FIELD_GET(QREGS_HWF_CFG1_OVERHEAD_EN, x->bitfield_0);
+	return FIELD_GET(QREGS_HWF_CFG1_OVERHEAD_EN, x->word);
 }
 static inline void set_qregs_hwf_cfg1_overhead_en(struct qregs_hwf_cfg1 *x, bool v) {
-	x->bitfield_0 = FIELD_SET(x->bitfield_0, QREGS_HWF_CFG1_OVERHEAD_EN, v);
+	x->word = FIELD_SET(x->word, QREGS_HWF_CFG1_OVERHEAD_EN, v);
+}
+
+/** Amount of overhead to add to packet size for accounting */
+static inline u8 get_qregs_hwf_cfg1_overhead(struct qregs_hwf_cfg1 *x) {
+	return FIELD_GET(QREGS_HWF_CFG1_OVERHEAD_MASK, x->word);
+}
+static inline void set_qregs_hwf_cfg1_overhead(struct qregs_hwf_cfg1 *x, u8 v) {
+	x->word = FIELD_SET(x->word, QREGS_HWF_CFG1_OVERHEAD_MASK, v);
+}
+
+/** Number of forward descriptors to use */
+static inline u16 get_qregs_hwf_cfg1_fwd_desc_n(struct qregs_hwf_cfg1 *x) {
+	return FIELD_GET(QREGS_HWF_CFG1_FWD_DESC_N_MASK, x->word);
+}
+static inline void set_qregs_hwf_cfg1_fwd_desc_n(struct qregs_hwf_cfg1 *x, u16 v) {
+	x->word = FIELD_SET(x->word, QREGS_HWF_CFG1_FWD_DESC_N_MASK, v);
 }
 
 /**
@@ -990,6 +991,88 @@ static inline void set_qregs_debug_mem_ctl_word_of_elem(struct mem_ctl *x, u8 v)
 }
 static inline void set_qregs_debug_mem_ctl_elem(struct mem_ctl *x, u16 v) {
 	x->word = FIELD_SET(x->word, QREGS_DEBUG_MEM_CTL_ELEM_MASK, v);
+}
+
+/**
+ * Bitfield accessors for: qregs_doneq_cfg
+ * Register layout (32-bit word):
+ * - Bits 31-16: INT_THRESHOLD (when done queue is this full, fire interrupt)
+ * - Bits 15-0: SIZE (size of done queue buffer in 4-byte units)
+ */
+#define QREGS_DONEQ_CFG_INT_THRESHOLD_MASK		GENMASK(31, 16)
+#define QREGS_DONEQ_CFG_SIZE_MASK			GENMASK(15, 0)
+
+static inline u16 get_qregs_doneq_cfg_int_threshold(struct qregs_doneq_cfg *x) {
+	return FIELD_GET(QREGS_DONEQ_CFG_INT_THRESHOLD_MASK, x->word);
+}
+static inline void set_qregs_doneq_cfg_int_threshold(struct qregs_doneq_cfg *x, u16 v) {
+	x->word = FIELD_SET(x->word, QREGS_DONEQ_CFG_INT_THRESHOLD_MASK, v);
+}
+static inline u16 get_qregs_doneq_cfg_size(struct qregs_doneq_cfg *x) {
+	return FIELD_GET(QREGS_DONEQ_CFG_SIZE_MASK, x->word);
+}
+static inline void set_qregs_doneq_cfg_size(struct qregs_doneq_cfg *x, u16 v) {
+	x->word = FIELD_SET(x->word, QREGS_DONEQ_CFG_SIZE_MASK, v);
+}
+
+/**
+ * Bitfield accessors for: qregs_doneq_state
+ * Register layout (32-bit word):
+ * - Bits 31-16: LENGTH (number of items waiting in the queue)
+ * - Bits 15-0: HEAD_INDEX (index of the first item in the list)
+ */
+#define QREGS_DONEQ_STATE_LENGTH_MASK			GENMASK(31, 16)
+#define QREGS_DONEQ_STATE_HEAD_INDEX_MASK		GENMASK(15, 0)
+
+static inline u16 get_qregs_doneq_state_length(struct qregs_doneq_state *x) {
+	return FIELD_GET(QREGS_DONEQ_STATE_LENGTH_MASK, x->word);
+}
+static inline u16 get_qregs_doneq_state_head_index(struct qregs_doneq_state *x) {
+	return FIELD_GET(QREGS_DONEQ_STATE_HEAD_INDEX_MASK, x->word);
+}
+
+/**
+ * Bitfield accessors for: qregs_rxring_size
+ * Register layout (32-bit word):
+ * - Bits 31-16: RING0_SIZE (size of RX ring 0, max 4095)
+ * - Bits 15-0: RING1_SIZE (size of RX ring 1, max 4095)
+ */
+#define QREGS_RXRING_SIZE_RING0_MASK			GENMASK(31, 16)
+#define QREGS_RXRING_SIZE_RING1_MASK			GENMASK(15, 0)
+
+static inline u16 get_qregs_rxring_size_ring0(struct qregs_rxring_size *x) {
+	return FIELD_GET(QREGS_RXRING_SIZE_RING0_MASK, x->word);
+}
+static inline void set_qregs_rxring_size_ring0(struct qregs_rxring_size *x, u16 v) {
+	x->word = FIELD_SET(x->word, QREGS_RXRING_SIZE_RING0_MASK, v);
+}
+static inline u16 get_qregs_rxring_size_ring1(struct qregs_rxring_size *x) {
+	return FIELD_GET(QREGS_RXRING_SIZE_RING1_MASK, x->word);
+}
+static inline void set_qregs_rxring_size_ring1(struct qregs_rxring_size *x, u16 v) {
+	x->word = FIELD_SET(x->word, QREGS_RXRING_SIZE_RING1_MASK, v);
+}
+
+/**
+ * Bitfield accessors for: qregs_rxring_low
+ * Register layout (32-bit word):
+ * - Bits 31-16: RING0_LOW (interrupt threshold for ring 0, max 4095)
+ * - Bits 15-0: RING1_LOW (interrupt threshold for ring 1, max 4095)
+ */
+#define QREGS_RXRING_LOW_RING0_MASK			GENMASK(31, 16)
+#define QREGS_RXRING_LOW_RING1_MASK			GENMASK(15, 0)
+
+static inline u16 get_qregs_rxring_low_ring0(struct qregs_rxring_low *x) {
+	return FIELD_GET(QREGS_RXRING_LOW_RING0_MASK, x->word);
+}
+static inline void set_qregs_rxring_low_ring0(struct qregs_rxring_low *x, u16 v) {
+	x->word = FIELD_SET(x->word, QREGS_RXRING_LOW_RING0_MASK, v);
+}
+static inline u16 get_qregs_rxring_low_ring1(struct qregs_rxring_low *x) {
+	return FIELD_GET(QREGS_RXRING_LOW_RING1_MASK, x->word);
+}
+static inline void set_qregs_rxring_low_ring1(struct qregs_rxring_low *x, u16 v) {
+	x->word = FIELD_SET(x->word, QREGS_RXRING_LOW_RING1_MASK, v);
 }
 
 #endif

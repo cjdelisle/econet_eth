@@ -111,6 +111,7 @@ struct en75_qdma {
 	struct fwdesc 			*hwf_desc;
 	struct net_device 		*napi_dev;
 	struct en75_qdma_cfg 		cfg;
+	const struct en75_soc_data	*soc;
 };
 
 static void en75_fill_rx_queue(struct en75_q_rx *q, u32 end_i)
@@ -136,7 +137,9 @@ static void en75_fill_rx_queue(struct en75_q_rx *q, u32 end_i)
 		e->dma_addr = page_pool_get_dma_addr(page) + offset;
 		e->dma_len = SKB_WITH_OVERHEAD(q->buf_size);
 
-		WRITE_ONCE(pdesc->info, (struct desc_info) { .pkt_len = e->dma_len });
+		WRITE_ONCE(pdesc->info, ((struct desc_info) {
+			.word = FIELD_PREP(DESC_INFO_PKT_LEN_MASK, e->dma_len)
+		}));
 		WRITE_ONCE(pdesc->pkt_addr, e->dma_addr);
 		for (i = 0; i < ARRAY_SIZE(pdesc->msg.raw); i++)
 			WRITE_ONCE(pdesc->msg.raw[i], 0);
@@ -170,7 +173,7 @@ static void en75_qdma_rx_process_one(struct en75_q_rx *q, u32 cpu_i,
 	/* Make debug more readable */
 	WRITE_ONCE(q->desc[cpu_i].pkt_addr, 0);
 
-	len = desc.info.pkt_len;
+	len = get_desc_info_pkt_len(&desc.info);
 	if (!len || len > SKB_WITH_OVERHEAD(q->buf_size))
 		goto return_page;
 
@@ -435,9 +438,9 @@ static int en75_poll_tx_complete(struct napi_struct *napi, int budget)
 	id = done_q - &qdma->q_tx_done[0];
 
 	state = en75_rreg(&done_q->regs->state);
-	head = state.head_index;
+	head = get_qregs_doneq_state_head_index(&state);
 	head = head % done_q->size;
-	irq_queued = state.length;
+	irq_queued = get_qregs_doneq_state_length(&state);
 
 	while (irq_queued > 0 && done < budget) {
 		u32 index, qid, val = done_q->q[head];
@@ -550,7 +553,9 @@ int en75_qdma_xmit(struct en75_qdma *qdma, struct sk_buff *skb,
 
 	desc = &q->desc[index];
 	WRITE_ONCE(desc->pkt_addr, addr);
-	WRITE_ONCE(desc->info, (struct desc_info) { .pkt_len = len });
+	WRITE_ONCE(desc->info, ((struct desc_info) {
+		.word = FIELD_PREP(DESC_INFO_PKT_LEN_MASK, len)
+	}));
 	WRITE_ONCE(desc->next_idx, next_index);
 	for (int i = 0; i < ARRAY_SIZE(desc->msg.raw); i++)
 		WRITE_ONCE(desc->msg.raw[i], msg->raw[i]);
@@ -642,11 +647,11 @@ static int en75_init_rx_queue(struct en75_q_rx *q,
 	rrl = en75_rreg(&qdma->regs->rxring_low);
 
 	if (q == &qdma->q_rx[0]) {
-		rrs.rxring0_size = ndesc;
-		rrl.rxring0_low = threshold;
+		set_qregs_rxring_size_ring0(&rrs, ndesc);
+		set_qregs_rxring_low_ring0(&rrl, threshold);
 	} else {
-		rrs.rxring1_size = ndesc;
-		rrl.rxring1_low = threshold;
+		set_qregs_rxring_size_ring1(&rrs, ndesc);
+		set_qregs_rxring_low_ring1(&rrl, threshold);
 	}
 
 	en75_wreg(rrs, &qdma->regs->rxring_size);
@@ -715,8 +720,8 @@ static int en75_init_tx_doneq(struct en75_tx_doneq *done_q,
 
 	en75_wreg(dma_addr, &qdma->regs->done_queue.address);
 	struct qregs_doneq_cfg cfg = en75_rreg(&qdma->regs->done_queue.config);
-	cfg.size = size;
-	cfg.int_threshold = 1;
+	set_qregs_doneq_cfg_size(&cfg, size);
+	set_qregs_doneq_cfg_int_threshold(&cfg, 1);
 	en75_wreg(cfg, &qdma->regs->done_queue.config);
 
 	return 0;
@@ -838,8 +843,8 @@ static int en75_init_hw_fwd(struct en75_qdma *qdma)
 	en75_wreg(cfg, &qdma->regs->hwf_cfg);
 
 	cfg1 = en75_rreg(&qdma->regs->hwf_cfg1);
-	cfg1.fwd_desc_n = num_desc;
-	cfg1.overhead = 0x14;
+	set_qregs_hwf_cfg1_fwd_desc_n(&cfg1, num_desc);
+	set_qregs_hwf_cfg1_overhead(&cfg1, 0x14);
 	set_qregs_hwf_cfg1_start(&cfg1, true);
 	en75_wreg(cfg1, &qdma->regs->hwf_cfg1);
 
@@ -910,7 +915,7 @@ static int en75_init_final(struct en75_qdma *qdma)
 
 	qcfg = (struct qregs_qcfg) { 0 };
 	set_qregs_qcfg_msg_word_swap(&qcfg, true);
-	set_qregs_qcfg_dscp_byte_swap(&qcfg, true);
+	set_qregs_qcfg_dscp_byte_swap(&qcfg, qdma->soc->dscp_byte_swap);
 	set_qregs_qcfg_payload_byte_sw(&qcfg, true);
 	set_qregs_qcfg_irq_en(&qcfg, true);
 	set_qregs_qcfg_check_done(&qcfg, true);
@@ -1127,6 +1132,7 @@ struct en75_qdma *en75_qdma_new(struct en75_eth *eth,
 	mutex_init(&qdma->lock);
 	qdma->regs = qdma_regs;
 	memcpy(&qdma->cfg, cfg, sizeof(*cfg));
+	qdma->soc = cfg->soc;
 	qdma->eth = eth;
 
 	qdma->napi_dev = alloc_netdev_dummy(0);
