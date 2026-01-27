@@ -205,12 +205,14 @@ static netdev_tx_t en75_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 	if (skb_linearize(skb))
 		goto error;
 
+	netdev_tx_sent_queue(txq, len);
+
 	ret = en75_qdma_xmit(port->qdma, skb, &msg, 0);
 
-	if (ret < 0)
+	if (ret < 0) {
+		netdev_tx_completed_queue(txq, 1, len);
 		goto error;
-
-	netdev_tx_sent_queue(txq, len);
+	}
 
 	if (ret == EBUSY)
 		netif_tx_stop_queue(txq);
