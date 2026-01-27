@@ -412,7 +412,8 @@ static irqreturn_t en75_irq_handler(int irq_num, void *dev_instance)
 					    p.chain);
 		}
 
-		en75_wreg(~disable_int, irq->mask_reg[i]);
+		irq->irqmask[i] &= ~disable_int;
+		en75_wreg(irq->irqmask[i], irq->mask_reg[i]);
 	}
 
 	return IRQ_HANDLED;
