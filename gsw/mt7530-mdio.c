@@ -132,6 +132,7 @@ static const struct of_device_id mt7530_of_match[] = {
 	{ .compatible = "mediatek,mt7621", .data = &mt753x_table[ID_MT7621], },
 	{ .compatible = "mediatek,mt7530", .data = &mt753x_table[ID_MT7530], },
 	{ .compatible = "mediatek,mt7531", .data = &mt753x_table[ID_MT7531], },
+	{ .compatible = "econet,en751221-switch", .data = &mt753x_table[ID_EN751221_EXT], },
 	{ /* sentinel */ },
 };
 MODULE_DEVICE_TABLE(of, mt7530_of_match);
@@ -211,7 +212,11 @@ mt7530_probe(struct mdio_device *mdiodev)
 	if (priv->id == ID_MT7531)
 		priv->create_sgmii = mt7531_create_sgmii;
 
-	return dsa_register_switch(priv->ds);
+	ret = dsa_register_switch(priv->ds);
+	if (ret)
+		return ret;
+
+	return mt7530_post_register(priv);
 }
 
 static void

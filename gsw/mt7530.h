@@ -298,6 +298,7 @@ enum mt7530_port_mode {
 
 /* Register for port vlan control */
 #define MT7530_PVC_P(x)			(0x2010 + ((x) * 0x100))
+#define  PVC_PASSTHROUGH		BIT(11)
 #define  PORT_SPEC_TAG			BIT(5)
 #define  PVC_EG_TAG(x)			(((x) & 0x7) << 8)
 #define  PVC_EG_TAG_MASK		PVC_EG_TAG(7)
@@ -324,6 +325,10 @@ enum mt7530_vlan_port_acc_frm {
 
 #define  STAG_VPID			(((x) & 0xffff) << 16)
 
+/* Passthrough bit in the upper 2 bytes of the Special Tag,
+ * indicates that a packet should go to a chained switch. */
+#define  STAG_PASSTHROUGH		BIT(7)
+
 /* Register for port port-and-protocol based vlan 1 control */
 #define MT7530_PPBV1_P(x)		(0x2014 + ((x) * 0x100))
 #define  G0_PORT_VID(x)			(((x) & 0xfff) << 0)
@@ -334,6 +339,9 @@ enum mt7530_vlan_port_acc_frm {
 #define MT753X_PMCR_P(x)		(0x3000 + ((x) * 0x100))
 #define  PMCR_IFG_XMIT_MASK		GENMASK(19, 18)
 #define  PMCR_IFG_XMIT(x)		FIELD_PREP(PMCR_IFG_XMIT_MASK, x)
+#define    PMCR_IFG_XMIT_96		0
+#define    PMCR_IFG_XMIT_RAND		1
+#define    PMCR_IFG_XMIT_64		2
 #define  PMCR_EXT_PHY			BIT(17)
 #define  PMCR_MAC_MODE			BIT(16)
 #define  MT7530_FORCE_MODE		BIT(15)
@@ -665,8 +673,6 @@ enum mt7531_xtal_fsel {
 #define  MT7531_PHY_PLL_OFF		BIT(5)
 #define  MT7531_PHY_PLL_BYPASS_MODE	BIT(4)
 
-#define MT753X_CTRL_PHY_ADDR(addr)	((addr + 1) & 0x1f)
-
 #define CORE_PLL_GROUP5			0x404
 #define  RG_LCDDS_PCW_NCPO1(x)		((x) & 0xffff)
 
@@ -678,6 +684,9 @@ enum mt7531_xtal_fsel {
 #define  RG_LCDDS_ISO_EN		BIT(13)
 #define  RG_LCCDS_C(x)			(((x) & 0x7) << 4)
 #define  RG_LCDDS_PCW_NCPO_CHG		BIT(3)
+
+#define CORE_PLL_GROUP8			0x407
+#define  RG_LCDDS_SSC_EN		BIT(10)
 
 #define CORE_PLL_GROUP10		0x409
 #define  RG_LCDDS_SSC_DELTA(x)		((x) & 0xfff)
@@ -792,6 +801,7 @@ struct mt753x_info {
  * @dev:		The device pointer
  * @ds:			The pointer to the dsa core structure
  * @bus:		The bus used for the device and built-in PHY
+ * @user_bus:		The bus created from the device's MDIO register
  * @regmap:		The regmap instance representing all switch registers
  * @rstc:		The pointer to reset control used by MCM
  * @core_pwr:		The power supplied into the core
@@ -816,6 +826,7 @@ struct mt7530_priv {
 	struct device		*dev;
 	struct dsa_switch	*ds;
 	struct mii_bus		*bus;
+	struct mii_bus		*user_bus;
 	struct regmap		*regmap;
 	struct reset_control	*rstc;
 	struct regulator	*core_pwr;
@@ -875,6 +886,7 @@ static inline void INIT_MT7530_DUMMY_POLL(struct mt7530_dummy_poll *p,
 }
 
 int mt7530_probe_common(struct mt7530_priv *priv);
+int mt7530_post_register(struct mt7530_priv *priv);
 void mt7530_remove_common(struct mt7530_priv *priv);
 
 extern const struct dsa_switch_ops mt7530_switch_ops;

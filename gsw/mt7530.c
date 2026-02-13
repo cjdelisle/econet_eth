@@ -74,6 +74,20 @@ static const struct mt7530_mib_desc mt7530_mib[] = {
 	MIB_DESC(1, 0xb8, "RxArlDrop"),
 };
 
+static int
+mt7530_ctrl_phy_addr(struct mt7530_priv *priv)
+{
+	/* EN751221 MMIO is controlled via it's 5th PHY (first is #8) */
+	if (priv->id == ID_EN751221)
+		return 12;
+
+	if (WARN_ON_ONCE(!priv->mdiodev))
+		return 0;
+
+	/* Default is 1st PHY */
+	return (priv->mdiodev->addr + 1) & 0x1f;
+}
+
 static void
 mt7530_mutex_lock(struct mt7530_priv *priv)
 {
@@ -91,33 +105,19 @@ mt7530_mutex_unlock(struct mt7530_priv *priv)
 static void
 core_write(struct mt7530_priv *priv, u32 reg, u32 val)
 {
+	int port = mt7530_ctrl_phy_addr(priv);
 	struct mii_bus *bus = priv->bus;
 	int ret;
 
+	if (!bus)
+		bus = priv->user_bus;
+
+	if (WARN_ON_ONCE(!bus))
+		return;
+
 	mt7530_mutex_lock(priv);
 
-	/* Write the desired MMD Devad */
-	ret = bus->write(bus, MT753X_CTRL_PHY_ADDR(priv->mdiodev->addr),
-			 MII_MMD_CTRL, MDIO_MMD_VEND2);
-	if (ret < 0)
-		goto err;
-
-	/* Write the desired MMD register address */
-	ret = bus->write(bus, MT753X_CTRL_PHY_ADDR(priv->mdiodev->addr),
-			 MII_MMD_DATA, reg);
-	if (ret < 0)
-		goto err;
-
-	/* Select the Function : DATA with no post increment */
-	ret = bus->write(bus, MT753X_CTRL_PHY_ADDR(priv->mdiodev->addr),
-			 MII_MMD_CTRL, MDIO_MMD_VEND2 | MII_MMD_CTRL_NOINCR);
-	if (ret < 0)
-		goto err;
-
-	/* Write the data into MMD's selected register */
-	ret = bus->write(bus, MT753X_CTRL_PHY_ADDR(priv->mdiodev->addr),
-			 MII_MMD_DATA, val);
-err:
+	ret = mmd_phy_write(bus, port, false, MDIO_MMD_VEND2, reg, val);
 	if (ret < 0)
 		dev_err(&bus->dev, "failed to write mmd register\n");
 
@@ -127,38 +127,26 @@ err:
 static void
 core_rmw(struct mt7530_priv *priv, u32 reg, u32 mask, u32 set)
 {
+	int port = mt7530_ctrl_phy_addr(priv);
 	struct mii_bus *bus = priv->bus;
-	u32 val;
 	int ret;
+
+	if (!bus)
+		bus = priv->user_bus;
+
+	if (WARN_ON_ONCE(!bus))
+		return;
 
 	mt7530_mutex_lock(priv);
 
-	/* Write the desired MMD Devad */
-	ret = bus->write(bus, MT753X_CTRL_PHY_ADDR(priv->mdiodev->addr),
-			 MII_MMD_CTRL, MDIO_MMD_VEND2);
+	ret = mmd_phy_read(bus, port, false, MDIO_MMD_VEND2, reg);
 	if (ret < 0)
 		goto err;
 
-	/* Write the desired MMD register address */
-	ret = bus->write(bus, MT753X_CTRL_PHY_ADDR(priv->mdiodev->addr),
-			 MII_MMD_DATA, reg);
-	if (ret < 0)
-		goto err;
+	ret &= ~mask;
+	ret |= set;
 
-	/* Select the Function : DATA with no post increment */
-	ret = bus->write(bus, MT753X_CTRL_PHY_ADDR(priv->mdiodev->addr),
-			 MII_MMD_CTRL, MDIO_MMD_VEND2 | MII_MMD_CTRL_NOINCR);
-	if (ret < 0)
-		goto err;
-
-	/* Read the content of the MMD's selected register */
-	val = bus->read(bus, MT753X_CTRL_PHY_ADDR(priv->mdiodev->addr),
-			MII_MMD_DATA);
-	val &= ~mask;
-	val |= set;
-	/* Write the data into MMD's selected register */
-	ret = bus->write(bus, MT753X_CTRL_PHY_ADDR(priv->mdiodev->addr),
-			 MII_MMD_DATA, val);
+	ret = mmd_phy_write(bus, port, false, MDIO_MMD_VEND2, reg, ret);
 err:
 	if (ret < 0)
 		dev_err(&bus->dev, "failed to write mmd register\n");
@@ -419,12 +407,16 @@ mt7530_setup_port6(struct dsa_switch *ds, phy_interface_t interface)
 
 	xtal = mt7530_read(priv, MT753X_MTRAP) & MT7530_XTAL_MASK;
 
-	if (xtal == MT7530_XTAL_25MHZ)
+	/* ID_EN751221 xtal freq is undeclared, but it is actually 25Mhz */
+	if (xtal == MT7530_XTAL_25MHZ || priv->id == ID_EN751221)
 		ssc_delta = 0x57;
 	else
 		ssc_delta = 0x87;
 
-	if (priv->id == ID_MT7621) {
+	if (priv->id == ID_EN751221_EXT || priv->id == ID_EN751221) {
+		/* PLL frequency: 362.5Mhz */
+		ncpo1 = 0x1d00;
+	} else if (priv->id == ID_MT7621) {
 		/* PLL frequency: 125MHz: 1.0GBit */
 		if (xtal == MT7530_XTAL_40MHZ)
 			ncpo1 = 0x0640;
@@ -448,9 +440,66 @@ mt7530_setup_port6(struct dsa_switch *ds, phy_interface_t interface)
 		   RG_SYSPLL_VODEN | RG_SYSPLL_POSDIV(1));
 	core_write(priv, CORE_PLL_GROUP7, RG_LCDDS_PCW_NCPO_CHG |
 		   RG_LCCDS_C(3) | RG_LCDDS_PWDB | RG_LCDDS_ISO_EN);
+	
+	if (priv->id == ID_EN751221_EXT)
+		core_clear(priv, CORE_PLL_GROUP8, RG_LCDDS_SSC_EN);
+
+	if (priv->id == ID_EN751221) {
+		int phy_n = mt7530_ctrl_phy_addr(priv);
+
+		mmd_phy_write(priv->user_bus, phy_n, false, MDIO_MMD_VEND1,
+			      0x0174, 0xa3a4);
+		mmd_phy_write(priv->user_bus, phy_n, false, MDIO_MMD_VEND1,
+			      0x0175, 0xa3a4);
+		mmd_phy_write(priv->user_bus, phy_n, false, MDIO_MMD_VEND1,
+			      0x0037, 0x0033);
+		mmd_phy_write(priv->user_bus, phy_n, false, MDIO_MMD_VEND1,
+			      0x00e0, 0x2425);
+		mmd_phy_write(priv->user_bus, phy_n, false, MDIO_MMD_VEND1,
+			      0x00e1, 0x0010);
+	}
 
 	/* Enable the MT7530 TRGMII clocks */
 	core_set(priv, CORE_TRGMII_GSW_CLK_CG, REG_TRGMIICK_EN);
+}
+
+/* Setup ports 0..=4 on EN751221 switch.
+ *
+ * Though it has the same PHY ID as other MT7530 implementations, the EN751221
+ * implementation of requires specific PHY tuning.
+ */
+static void
+en751221_setup_port(struct dsa_switch *ds, int port)
+{
+	struct dsa_port *dp = dp = dsa_to_port(ds, port);
+	struct phy_device *phy = dp->user->phydev;
+
+	if (!phy)
+		return;
+
+	/* This is mostly undocumented magic. */
+
+	phy_write(phy, MII_BMCR, BMCR_RESET);
+
+	phy_write_mmd(phy, MDIO_MMD_VEND2, 0x0417, 0x7775);
+	phy_write_mmd(phy, MDIO_MMD_VEND2, 0x027b, 0x1157);
+	phy_write_mmd(phy, MDIO_MMD_VEND2, 0x0044, 0x0040);
+	
+	phy_write_mmd(phy, MDIO_MMD_VEND1, 0x0045, 0x0404);
+	phy_write_mmd(phy, MDIO_MMD_VEND1, 0x0046, 0x0404);
+
+	phy_write_mmd(phy, MDIO_MMD_VEND1, 0x0041, 0x3333);
+
+	phy_write_mmd(phy, MDIO_MMD_VEND1, 0x0016, 0x0018);
+
+	phy_write_mmd(phy, MDIO_MMD_VEND1, 0x0008, 0x02f0);
+
+	/* Disable EEE */
+	phy_write_mmd(phy, MDIO_MMD_AN, MDIO_AN_EEE_ADV, 0);
+
+	phy_write_mmd(phy, MDIO_MMD_VEND1, 0x00a6, 0x0350);
+
+	phy_write(phy, MII_BMCR, BMCR_ANENABLE | BMCR_ANRESTART);
 }
 
 static void
@@ -890,8 +939,13 @@ static void mt7530_setup_port5(struct dsa_switch *ds, phy_interface_t interface)
 
 	/* MUX_PHY_P4: P4 -> P5 -> SoC MAC */
 	case MUX_PHY_P4:
+		// NOTE: No change here, just reformatted for easier reading
 		/* Setup the MAC by default for the cpu port */
-		mt7530_write(priv, MT753X_PMCR_P(5), 0x56300);
+		mt7530_write(priv, MT753X_PMCR_P(5),
+			     PMCR_IFG_XMIT(PMCR_IFG_XMIT_RAND) |
+			     PMCR_MAC_MODE | PMCR_MAC_TX_EN |
+			     PMCR_MAC_RX_EN | PMCR_BACKOFF_EN |
+			     PMCR_BACKPR_EN);
 		break;
 
 	/* GMAC5: P5 -> SoC MAC or external PHY */
@@ -900,8 +954,14 @@ static void mt7530_setup_port5(struct dsa_switch *ds, phy_interface_t interface)
 		break;
 	}
 
-	/* Setup RGMII settings */
-	if (phy_interface_mode_is_rgmii(interface)) {
+	if (priv->id == ID_EN751221) {
+		if (phy_interface_mode_is_rgmii(interface))
+			val |= MT7530_P5_RGMII_MODE;
+
+		mt7530_rmw(priv, MT753X_PMCR_P(5), PMCR_IFG_XMIT_MASK,
+			   PMCR_IFG_XMIT(PMCR_IFG_XMIT_64));
+
+	} else if (phy_interface_mode_is_rgmii(interface)) {
 		val |= MT7530_P5_RGMII_MODE;
 
 		/* P5 RGMII RX Clock Control: delay setting for 1000M */
@@ -1135,14 +1195,29 @@ mt753x_trap_frames(struct mt7530_priv *priv)
 			   TO_CPU_FW_CPU_ONLY);
 }
 
+static u32
+mt753x_available_ports(struct dsa_switch *ds)
+{
+	struct dsa_port *dp;
+	u32 mask = 0;
+
+	dsa_switch_for_each_available_port(dp, ds)
+		mask |= BIT(dp->index);
+
+	return mask;
+}
+
 static void
-mt753x_cpu_port_enable(struct dsa_switch *ds, int port)
+mt753x_upstream_port_enable(struct dsa_switch *ds, int port)
 {
 	struct mt7530_priv *priv = ds->priv;
 
-	/* Enable Mediatek header mode on the cpu port */
+	/* Enable Mediatek header mode on the cpu port. If the switch is a
+	 * child then it must also set the passthrough bit to prevent its
+	 * stags getting dropped by the parent. */
 	mt7530_write(priv, MT7530_PVC_P(port),
-		     PORT_SPEC_TAG);
+		     PORT_SPEC_TAG |
+		     (dsa_is_dsa_port(ds, port) ? PVC_PASSTHROUGH : 0));
 
 	/* Enable flooding on the CPU port */
 	mt7530_set(priv, MT753X_MFC, BC_FFP(BIT(port)) | UNM_FFP(BIT(port)) |
@@ -1156,11 +1231,9 @@ mt753x_cpu_port_enable(struct dsa_switch *ds, int port)
 	    priv->id == ID_EN7581)
 		mt7530_set(priv, MT7531_CFC, MT7531_CPU_PMAP(BIT(port)));
 
-	/* CPU port gets connected to all user ports of
-	 * the switch.
-	 */
+	/* CPU port gets connected to all active ports of the switch. */
 	mt7530_write(priv, MT7530_PCR_P(port),
-		     PCR_MATRIX(dsa_user_ports(priv->ds)));
+		     PCR_MATRIX(mt753x_available_ports(priv->ds) & ~BIT(port)));
 
 	/* Set to fallback mode for independent VLAN learning */
 	mt7530_rmw(priv, MT7530_PCR_P(port), PCR_PORT_VLAN_MASK,
@@ -1171,27 +1244,42 @@ static int
 mt7530_port_enable(struct dsa_switch *ds, int port,
 		   struct phy_device *phy)
 {
+	int upstream_pt = dsa_switch_upstream_port(ds);
 	struct dsa_port *dp = dsa_to_port(ds, port);
 	struct mt7530_priv *priv = ds->priv;
-
-	mutex_lock(&priv->reg_mutex);
 
 	/* Allow the user port gets connected to the cpu port and also
 	 * restore the port matrix if the port is the member of a certain
 	 * bridge.
 	 */
-	if (dsa_port_is_user(dp)) {
-		struct dsa_port *cpu_dp = dp->cpu_dp;
+	if (dp->index != upstream_pt) {
+		guard(mutex)(&priv->reg_mutex);
 
-		priv->ports[port].pm |= PCR_MATRIX(BIT(cpu_dp->index));
+		priv->ports[port].pm |= PCR_MATRIX(BIT(upstream_pt));
+		priv->ports[port].enable = true;
+
+		mt7530_rmw(priv, MT7530_PCR_P(port), PCR_MATRIX_MASK,
+			   priv->ports[port].pm);
+
+		if (dsa_port_is_dsa(dp)) {
+			/* A link to a downstream switch is set as a USER link
+			 * so that the Special Tag from the downstream switch
+			 * will be popped, and it gets PORT_SPEC_TAG which
+			 * causes the Special Tag port number to be copied back
+			 * to the Special Tag emitted from the upstream switch.
+			 */
+			mt7530_rmw(priv, MT7530_PVC_P(port),
+				   VLAN_ATTR_MASK | PORT_SPEC_TAG,
+				   VLAN_ATTR(MT7530_VLAN_USER) | PORT_SPEC_TAG);
+
+			/* We let the child switch flood */
+			mt7530_set(priv, MT753X_MFC, BC_FFP(BIT(port)) |
+				   UNM_FFP(BIT(port)) | UNU_FFP(BIT(port)));
+		}
 	}
-	priv->ports[port].enable = true;
-	mt7530_rmw(priv, MT7530_PCR_P(port), PCR_MATRIX_MASK,
-		   priv->ports[port].pm);
 
-	mutex_unlock(&priv->reg_mutex);
-
-	if (priv->id != ID_MT7530 && priv->id != ID_MT7621)
+	if (priv->id != ID_MT7530 && priv->id != ID_MT7621 &&
+	    priv->id != ID_EN751221 && priv->id != ID_EN751221_EXT)
 		return 0;
 
 	if (port == 5)
@@ -1218,7 +1306,8 @@ mt7530_port_disable(struct dsa_switch *ds, int port)
 
 	mutex_unlock(&priv->reg_mutex);
 
-	if (priv->id != ID_MT7530 && priv->id != ID_MT7621)
+	if (priv->id != ID_MT7530 && priv->id != ID_MT7621 &&
+	    priv->id != ID_EN751221 && priv->id != ID_EN751221_EXT)
 		return;
 
 	/* Do not set MT7530_P5_DIS when port 5 is being used for PHY muxing. */
@@ -1462,8 +1551,11 @@ mt7530_port_set_vlan_unaware(struct dsa_switch *ds, int port)
 
 		mt7530_write(priv, MT7530_PCR_P(cpu_dp->index),
 			     PCR_MATRIX(dsa_user_ports(priv->ds)));
+		// NOTE: No change here, fields which equal 0 added for readability.
 		mt7530_write(priv, MT7530_PVC_P(cpu_dp->index), PORT_SPEC_TAG
-			     | PVC_EG_TAG(MT7530_VLAN_EG_CONSISTENT));
+			     | PVC_EG_TAG(MT7530_VLAN_EG_CONSISTENT)
+			     | VLAN_ATTR(MT7530_VLAN_USER)
+			     | MT7530_VLAN_ACC_ALL);
 	}
 }
 
@@ -2273,7 +2365,7 @@ mt7530_free_irq(struct mt7530_priv *priv)
 }
 
 static int
-mt7530_setup_mdio(struct mt7530_priv *priv)
+mt7530_setup_mdio(struct mt7530_priv *priv, bool post_reg)
 {
 	struct device_node *mnp, *np = priv->dev->of_node;
 	struct dsa_switch *ds = priv->ds;
@@ -2283,6 +2375,9 @@ mt7530_setup_mdio(struct mt7530_priv *priv)
 	int ret = 0;
 
 	mnp = of_get_child_by_name(np, "mdio");
+
+	if ((mnp != NULL) != post_reg)
+		goto out;
 
 	if (mnp && !of_device_is_available(mnp))
 		goto out;
@@ -2314,11 +2409,60 @@ mt7530_setup_mdio(struct mt7530_priv *priv)
 		dev_err(dev, "failed to register MDIO bus: %d\n", ret);
 		if (priv->irq && !mnp)
 			mt7530_free_mdio_irq(priv);
+	} else {
+		priv->user_bus = bus;
 	}
 
 out:
 	of_node_put(mnp);
 	return ret;
+}
+
+/* The MT753x allows a second switch to be chained off of one of the ports
+ * of the first, but there are a couple of rules. First, there can only be
+ * one chained switch, and second, the chained switch cannot have any port
+ * active that is also active on the parent switch. For example, if port
+ * 4 is active on the root switch, it cannot also be active on the second.
+ *
+ * The way chaining works is as follows:
+ * 1. External switch CPU port gets PVC_PASSTHROUGH flag set, this causes it
+ *   to flag the Special Tag of each packet with STAG_PASSTHROUGH bit.
+ * 2. Internal switch link port gets MT7530_VLAN_USER | PORT_SPEC_TAG.
+ *    MT7530_VLAN_USER pops the Special Tag from the incoming packet, and
+ *    PORT_SPEC_TAG causes it to be stored in switch memory.
+ * 3. Internal switch CPU port has PORT_SPEC_TAG (as it always does), but
+ *    it knows to retreive the tag from memory rather than using its own.
+ *
+ * There is however a bug in this system: The re-constituted Special Tag
+ * loses the passthrough bit, making it impossible for the OS to
+ * distinguish between a packet from port X of the external switch, and a
+ * packet from port X of the internal.
+ *
+ * Hardware integrators work around this by never allocating the same port on
+ * both switches, so here we check the DT to ensure this limitation is
+ * adhered to.
+ */
+static int mt7530_check_chaining(struct dsa_switch *ds)
+{
+	struct dsa_switch_tree *dst = ds->dst;
+	struct mt7530_priv *priv = ds->priv;
+	struct dsa_port *dp;
+	u32 ports_used = 0;
+
+	list_for_each_entry(dp, &dst->ports, list) {
+		if (!dsa_port_is_user(dp))
+			continue;
+
+		if (ports_used & BIT(dp->index)) {
+			dev_err(priv->dev, "Port number %d allocated twice\n",
+				dp->index);
+			return -EINVAL;
+		}
+
+		ports_used |= BIT(dp->index);
+	}
+
+	return 0;
 }
 
 static int
@@ -2346,10 +2490,9 @@ mt7530_setup(struct dsa_switch *ds)
 		break;
 	}
 
-	if (!dn) {
-		dev_err(ds->dev, "parent OF node of DSA conduit not found");
-		return -EINVAL;
-	}
+	ret = mt7530_check_chaining(ds);
+	if (ret)
+		return ret;
 
 	ds->assisted_learning_on_cpu_port = true;
 	ds->mtu_enforcement_ingress = true;
@@ -2375,7 +2518,7 @@ mt7530_setup(struct dsa_switch *ds)
 	/* Reset whole chip through gpio pin or memory-mapped registers for
 	 * different type of hardware
 	 */
-	if (priv->mcm) {
+	if (priv->mcm || priv->id == ID_EN751221) {
 		reset_control_assert(priv->rstc);
 		usleep_range(5000, 5100);
 		reset_control_deassert(priv->rstc);
@@ -2421,11 +2564,19 @@ mt7530_setup(struct dsa_switch *ds)
 		mt7530_rmw(priv, MT7530_TRGMII_RD(i),
 			   RD_TAP_MASK, RD_TAP(16));
 
+	/* Undocumented magic, without which the MCM and SoC switches don't link. */
+	if (priv->id == ID_EN751221_EXT || priv->id == ID_EN751221)
+		mt7530_write(priv, 0x7a7c, 0x77);
+
 	/* Allow modifying the trap and directly access PHY registers via the
 	 * MDIO bus the switch is on.
 	 */
 	mt7530_rmw(priv, MT753X_MTRAP, MT7530_CHG_TRAP |
 		   MT7530_PHY_INDIRECT_ACCESS, MT7530_CHG_TRAP);
+
+	/* MCM switch starts up on 200Mhz clock which is incorrect. */
+	if (priv->id == ID_EN751221_EXT)
+		mt7530_clear(priv, MT753X_MTRAP, (1<<15));
 
 	if ((val & MT7530_XTAL_MASK) == MT7530_XTAL_40MHZ)
 		mt7530_pll_setup(priv);
@@ -2451,8 +2602,8 @@ mt7530_setup(struct dsa_switch *ds)
 		/* Disable learning by default on all ports */
 		mt7530_set(priv, MT7530_PSC_P(i), SA_DIS);
 
-		if (dsa_is_cpu_port(ds, i)) {
-			mt753x_cpu_port_enable(ds, i);
+		if (dsa_is_upstream_port(ds, i)) {
+			mt753x_upstream_port_enable(ds, i);
 		} else {
 			mt7530_port_disable(ds, i);
 
@@ -2474,7 +2625,7 @@ mt7530_setup(struct dsa_switch *ds)
 		return ret;
 
 	/* Check for PHY muxing on port 5 */
-	if (dsa_is_unused_port(ds, 5)) {
+	if (dn && dsa_is_unused_port(ds, 5)) {
 		/* Scan the ethernet nodes. Look for GMAC1, lookup the used PHY.
 		 * Set priv->p5_mode to the appropriate value if PHY muxing is
 		 * detected.
@@ -2570,8 +2721,8 @@ mt7531_setup_common(struct dsa_switch *ds)
 
 		mt7530_set(priv, MT7531_DBG_CNT(i), MT7531_DIS_CLR);
 
-		if (dsa_is_cpu_port(ds, i)) {
-			mt753x_cpu_port_enable(ds, i);
+		if (dsa_is_upstream_port(ds, i)) {
+			mt753x_upstream_port_enable(ds, i);
 		} else {
 			mt7530_port_disable(ds, i);
 
@@ -2602,8 +2753,11 @@ mt7531_setup(struct dsa_switch *ds)
 {
 	struct mt7530_priv *priv = ds->priv;
 	struct mt7530_dummy_poll p;
+	int ret, i, phy0;
 	u32 val, id;
-	int ret, i;
+
+	/* MT7531 MDIO control phy is the same as 1st phy */
+	phy0 = mt7530_ctrl_phy_addr(priv);
 
 	/* Reset whole chip through gpio pin or memory-mapped registers for
 	 * different type of hardware
@@ -2669,22 +2823,17 @@ mt7531_setup(struct dsa_switch *ds)
 	 * phy_[read,write]_mmd_indirect is called, we provide our own
 	 * mt7531_ind_mmd_phy_[read,write] to complete this function.
 	 */
-	val = mt7531_ind_c45_phy_read(priv,
-				      MT753X_CTRL_PHY_ADDR(priv->mdiodev->addr),
-				      MDIO_MMD_VEND2, CORE_PLL_GROUP4);
+	val = mt7531_ind_c45_phy_read(priv, phy0, MDIO_MMD_VEND2,
+				      CORE_PLL_GROUP4);
 	val |= MT7531_RG_SYSPLL_DMY2 | MT7531_PHY_PLL_BYPASS_MODE;
 	val &= ~MT7531_PHY_PLL_OFF;
-	mt7531_ind_c45_phy_write(priv,
-				 MT753X_CTRL_PHY_ADDR(priv->mdiodev->addr),
-				 MDIO_MMD_VEND2, CORE_PLL_GROUP4, val);
+	mt7531_ind_c45_phy_write(priv, phy0, MDIO_MMD_VEND2, CORE_PLL_GROUP4,
+				 val);
 
 	/* Disable EEE advertisement on the switch PHYs. */
-	for (i = MT753X_CTRL_PHY_ADDR(priv->mdiodev->addr);
-	     i < MT753X_CTRL_PHY_ADDR(priv->mdiodev->addr) + MT7530_NUM_PHYS;
-	     i++) {
+	for (i = phy0; i < phy0 + MT7530_NUM_PHYS; i++)
 		mt7531_ind_c45_phy_write(priv, i, MDIO_MMD_AN, MDIO_AN_EEE_ADV,
 					 0);
-	}
 
 	ret = mt7531_setup_common(ds);
 	if (ret)
@@ -2762,6 +2911,14 @@ static void mt7531_mac_port_get_caps(struct dsa_switch *ds, int port,
 	}
 }
 
+static void en751221_mac_port_get_caps(struct dsa_switch *ds, int port,
+				       struct phylink_config *config)
+{
+	config->mac_capabilities |= MAC_10 | MAC_100 | MAC_1000FD;
+	__set_bit(PHY_INTERFACE_MODE_INTERNAL,
+		  config->supported_interfaces);
+}
+
 static void mt7988_mac_port_get_caps(struct dsa_switch *ds, int port,
 				     struct phylink_config *config)
 {
@@ -2816,6 +2973,8 @@ mt7530_mac_config(struct dsa_switch *ds, int port, unsigned int mode,
 		mt7530_setup_port5(priv->ds, interface);
 	else if (port == 6)
 		mt7530_setup_port6(priv->ds, interface);
+	else if (priv->id == ID_EN751221 || priv->id == ID_EN751221_EXT)
+		en751221_setup_port(priv->ds, port);
 }
 
 static void mt7531_rgmii_setup(struct mt7530_priv *priv,
@@ -2903,7 +3062,7 @@ mt753x_phylink_mac_config(struct phylink_config *config, unsigned int mode,
 
 	priv = ds->priv;
 
-	if ((port == 5 || port == 6) && priv->info->mac_port_config)
+	if (priv->info->mac_port_config)
 		priv->info->mac_port_config(ds, port, mode, state->interface);
 
 	/* Are we connected to external phy */
@@ -2930,9 +3089,16 @@ static void mt753x_phylink_mac_link_up(struct phylink_config *config,
 {
 	struct dsa_port *dp = dsa_phylink_to_port(config);
 	struct mt7530_priv *priv = dp->ds->priv;
-	u32 mcr;
+	u32 mcr, mask = 0;
 
 	mcr = PMCR_MAC_RX_EN | PMCR_MAC_TX_EN | PMCR_FORCE_LNK;
+
+	if (priv->id == ID_EN751221_EXT) {
+		mcr |= MT7530_FORCE_MODE | PMCR_MAC_MODE |
+		       PMCR_IFG_XMIT(PMCR_IFG_XMIT_64) | PMCR_BACKOFF_EN |
+		       PMCR_BACKPR_EN;
+		mask |= PMCR_IFG_XMIT_MASK;
+	}
 
 	switch (speed) {
 	case SPEED_1000:
@@ -2964,7 +3130,7 @@ static void mt753x_phylink_mac_link_up(struct phylink_config *config,
 		}
 	}
 
-	mt7530_set(priv, MT753X_PMCR_P(dp->index), mcr);
+	mt7530_rmw(priv, MT753X_PMCR_P(dp->index), mask | mcr, mcr);
 }
 
 static void mt753x_phylink_get_caps(struct dsa_switch *ds, int port,
@@ -3057,7 +3223,7 @@ mt753x_setup(struct dsa_switch *ds)
 	if (ret)
 		return ret;
 
-	ret = mt7530_setup_mdio(priv);
+	ret = mt7530_setup_mdio(priv, false);
 	if (ret && priv->irq)
 		mt7530_free_irq_common(priv);
 	if (ret)
@@ -3115,7 +3281,6 @@ mt753x_conduit_state_change(struct dsa_switch *ds,
 			    const struct net_device *conduit,
 			    bool operational)
 {
-	struct dsa_port *cpu_dp = conduit->dsa_ptr;
 	struct mt7530_priv *priv = ds->priv;
 	int val = 0;
 	u8 mask;
@@ -3124,10 +3289,11 @@ mt753x_conduit_state_change(struct dsa_switch *ds,
 	 * forwarded to the numerically smallest CPU port whose conduit
 	 * interface is up.
 	 */
-	if (priv->id != ID_MT7530 && priv->id != ID_MT7621)
+	if (priv->id != ID_MT7530 && priv->id != ID_MT7621 &&
+	    priv->id != ID_EN751221 && priv->id != ID_EN751221_EXT)
 		return;
 
-	mask = BIT(cpu_dp->index);
+	mask = BIT(dsa_switch_upstream_port(ds));
 
 	if (operational)
 		priv->active_cpu_ports |= mask;
@@ -3253,6 +3419,28 @@ const struct mt753x_info mt753x_table[] = {
 		.phy_write_c45 = mt7531_ind_c45_phy_write,
 		.mac_port_get_caps = en7581_mac_port_get_caps,
 	},
+	[ID_EN751221] = {
+		.id = ID_EN751221,
+		.pcs_ops = &mt7530_pcs_ops,
+		.sw_setup = mt7530_setup,
+		.phy_read_c22 = mt7531_ind_c22_phy_read,
+		.phy_write_c22 = mt7531_ind_c22_phy_write,
+		.phy_read_c45 = mt7531_ind_c45_phy_read,
+		.phy_write_c45 = mt7531_ind_c45_phy_write,
+		.mac_port_get_caps = en751221_mac_port_get_caps,
+		.mac_port_config = mt7530_mac_config,
+	},
+	[ID_EN751221_EXT] = {
+		.id = ID_EN751221_EXT,
+		.pcs_ops = &mt7530_pcs_ops,
+		.sw_setup = mt7530_setup,
+		.phy_read_c22 = mt7530_phy_read_c22,
+		.phy_write_c22 = mt7530_phy_write_c22,
+		.phy_read_c45 = mt7530_phy_read_c45,
+		.phy_write_c45 = mt7530_phy_write_c45,
+		.mac_port_get_caps = mt7530_mac_port_get_caps,
+		.mac_port_config = mt7530_mac_config,
+	},
 };
 EXPORT_SYMBOL_GPL(mt753x_table);
 
@@ -3286,6 +3474,13 @@ mt7530_probe_common(struct mt7530_priv *priv)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(mt7530_probe_common);
+
+int
+mt7530_post_register(struct mt7530_priv *priv)
+{
+	return mt7530_setup_mdio(priv, true);
+}
+EXPORT_SYMBOL_GPL(mt7530_post_register);
 
 void
 mt7530_remove_common(struct mt7530_priv *priv)

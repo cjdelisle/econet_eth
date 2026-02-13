@@ -189,18 +189,6 @@ static void en75_qdma_rx_process_one(struct en75_q_rx *q, u32 cpu_i,
 	skb_set_hash(skb, jhash_1word(hash, 0),
 		     PKT_HASH_TYPE_L4);
 
-	pr_info("PKT len=%d sport=%d crsn=%d ppee=%d sptag=%04x tci=%04x%s\n", len,
-		get_erx_sport(&desc.msg.erx), get_erx_crsn(&desc.msg.erx),
-		get_erx_ppe_entry(&desc.msg.erx),
-		desc.msg.erx.sp_tag,
-		desc.msg.erx.tci,
-		is_erx_untag(&desc.msg.erx) ? " +UNTAG" : "");
-	print_hex_dump(KERN_INFO, "  ",
-               DUMP_PREFIX_OFFSET,
-               16, 1,
-               e->buf, len,
-               false);
-
 	/* TODO: When we begin supporting the PPE, we will handle
 	 *       PPE_CPU_REASON_HIT_UNBIND_RATE_REACHED here. */
 

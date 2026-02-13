@@ -19,6 +19,7 @@
 #define MTK_HDR_RECV_SOURCE_PORT_MASK	GENMASK(2, 0)
 #define MTK_HDR_XMIT_DP_BIT_MASK	GENMASK(5, 0)
 #define MTK_HDR_XMIT_SA_DIS		BIT(6)
+#define MTK_HDR_XMIT_PASSTHROUGH	BIT(7)
 
 static struct sk_buff *mtk_tag_xmit(struct sk_buff *skb,
 				    struct net_device *dev)
@@ -63,6 +64,10 @@ static struct sk_buff *mtk_tag_xmit(struct sk_buff *skb,
 	mtk_tag[0] = xmit_tpid;
 	mtk_tag[1] = (1 << dp->index) & MTK_HDR_XMIT_DP_BIT_MASK;
 
+	/* If not switch 0, we must set the passthrough bit */
+	if (dp->ds->index)
+		mtk_tag[1] |= MTK_HDR_XMIT_PASSTHROUGH;
+
 	/* Tag control information is kept for 802.1Q */
 	if (xmit_tpid == MTK_HDR_XMIT_UNTAGGED) {
 		mtk_tag[2] = 0;
@@ -71,6 +76,31 @@ static struct sk_buff *mtk_tag_xmit(struct sk_buff *skb,
 
 	return skb;
 }
+
+/* Implementation of dsa_conduit_find_user() which does not care about which
+ * switch device the user port is found on.
+ *
+ * MT7530 switches support chaining, but with only one downstream switch, and
+ * the downstream and upstream switches cannot share any port numbers. If port
+ * 4 is enabled on the downstream switch, it cannot also be enabled on the
+ * upstream. Therefore we can scan for a matching port without regard for
+ * which switch it is on.
+ */
+static inline struct net_device *mtk_conduit_find_user(struct net_device *dev,
+						       int port)
+{
+	struct dsa_port *cpu_dp = dev->dsa_ptr;
+	struct dsa_switch_tree *dst = cpu_dp->dst;
+	struct dsa_port *dp;
+
+	list_for_each_entry(dp, &dst->ports, list)
+		if (dp->index == port &&
+		    dp->type == DSA_PORT_TYPE_USER)
+			return dp->user;
+
+	return NULL;
+}
+
 
 static struct sk_buff *mtk_tag_rcv(struct sk_buff *skb, struct net_device *dev)
 {
@@ -92,7 +122,7 @@ static struct sk_buff *mtk_tag_rcv(struct sk_buff *skb, struct net_device *dev)
 	/* Get source port information */
 	port = (hdr & MTK_HDR_RECV_SOURCE_PORT_MASK);
 
-	skb->dev = dsa_conduit_find_user(dev, 0, port);
+	skb->dev = mtk_conduit_find_user(dev, port);
 	if (!skb->dev)
 		return NULL;
 
