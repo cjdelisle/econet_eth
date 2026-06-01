@@ -211,6 +211,18 @@ static netdev_tx_t en75_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	if (ret < 0) {
 		netdev_tx_completed_queue(txq, 1, len);
+		if (ret == -EBUSY) {
+			/* The TX ring is full and en75_qdma_xmit() did not consume
+			 * the skb. A NETDEV_TX_BUSY return makes the qdisc layer
+			 * requeue this same skb, so it must stay alive: stop the
+			 * queue and return without freeing. Freeing it here and
+			 * returning NETDEV_TX_BUSY requeues freed memory into
+			 * q->gso_skb -> use-after-free in __qdisc_run() under
+			 * sustained TX.
+			 */
+			netif_tx_stop_queue(txq);
+			return NETDEV_TX_BUSY;
+		}
 		goto error;
 	}
 
@@ -222,11 +234,6 @@ static netdev_tx_t en75_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 error:
 	dev_kfree_skb_any(skb);
 	dev->stats.tx_dropped++;
-
-	if (ret == -EBUSY) {
-		netif_tx_stop_queue(txq);
-		return NETDEV_TX_BUSY;
-	}
 
 	return NETDEV_TX_OK;
 }
