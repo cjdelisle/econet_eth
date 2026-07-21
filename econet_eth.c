@@ -97,6 +97,8 @@ struct en75_eth_pvt {
 	int				qdma_irq[EN75_NUM_QDMA * QDMA_NUM_IRQS];
 	struct en75_qdma		*qdma[EN75_NUM_QDMA];
 	struct en75_debug		*debug;
+	/* Whether our register window covers the on-die switch, see probe. */
+	bool				has_switch_regs;
 };
 
 union gdm_regs {
@@ -194,6 +196,14 @@ int en75_port_set_macaddr(struct en75_eth *eth, enum etx_fport portn, const u8 *
 	u32 __iomem *reg = ep->regs->switch_regs;
 	struct gdm_mymac_msb msb = { .word = 0 };
 	struct gdm_mymac_lsb lsb = { .word = 0 };
+
+	/*
+	 * This programs the switch source MAC address (SMACCR). Those
+	 * registers live in the switch register block, so when the switch is
+	 * managed by the mt7530 DSA driver they are not ours to write.
+	 */
+	if (!ep->has_switch_regs)
+		return 0;
 
 	if (portn != ETX_FPORT_GDM1)
 		return 0;
@@ -327,10 +337,21 @@ static int en75_probe(struct platform_device *pdev)
 		return dev_err_probe(&pdev->dev, PTR_ERR(regs),
 				     "failed to map registers\n");
 
-	if (resource_size(regs_res) < sizeof(struct en751221_regs)) {
+	if (resource_size(regs_res) <
+	    offsetof(struct en751221_regs, switch_regs)) {
 		return dev_err_probe(&pdev->dev, -EINVAL,
 				     "insufficient register space\n");
 	}
+
+	/*
+	 * The on-die switch sits right above the frame engine in the register
+	 * space. When it is managed by the mt7530 DSA driver it is described
+	 * by its own device tree node and claims those registers itself, so
+	 * the window handed to us stops short of them. In that case we are
+	 * purely the DSA conduit and must leave the switch alone.
+	 */
+	eth->has_switch_regs =
+		resource_size(regs_res) >= sizeof(struct en751221_regs);
 
 	eth->regs = regs;
 
@@ -388,10 +409,12 @@ static int en75_probe(struct platform_device *pdev)
 
 	eth->debug = en75_debugfs_init(&debug_conf);
 
-	/* Configure the MT7530 as a dumb switch */
-	en75_wreg(EN75_PMCR_CONFIG, &regs->switch_regs[MT753X_PMCR_P(5) / 4]);
-	en75_wreg(EN75_PMCR_CONFIG, &regs->switch_regs[MT753X_PMCR_P(6) / 4]);
-	en75_wreg(EN75_MFC_CONFIG, &regs->switch_regs[MT753X_MFC / 4]);
+	/* Configure the MT7530 as a dumb switch, unless it is managed by DSA */
+	if (eth->has_switch_regs) {
+		en75_wreg(EN75_PMCR_CONFIG, &regs->switch_regs[MT753X_PMCR_P(5) / 4]);
+		en75_wreg(EN75_PMCR_CONFIG, &regs->switch_regs[MT753X_PMCR_P(6) / 4]);
+		en75_wreg(EN75_MFC_CONFIG, &regs->switch_regs[MT753X_MFC / 4]);
+	}
 
 	return 0;
 
