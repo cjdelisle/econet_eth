@@ -3888,8 +3888,8 @@ static const struct dsa_switch_ops mt7530_switch_ops = {
 	.set_mac_eee		= mt753x_set_mac_eee,
 	.conduit_state_change	= mt753x_conduit_state_change,
 	.port_setup_tc		= mt753x_setup_tc,
-	.port_hsr_join		= dsa_port_simple_hsr_join,
-	.port_hsr_leave		= dsa_port_simple_hsr_leave,
+	// .port_hsr_join		= dsa_port_simple_hsr_join,
+	// .port_hsr_leave		= dsa_port_simple_hsr_leave,
 };
 
 static const struct phylink_mac_ops mt753x_phylink_mac_ops = {
