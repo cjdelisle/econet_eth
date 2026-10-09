@@ -145,6 +145,20 @@ static int en75_dev_open(struct net_device *dev)
 
 	netif_tx_start_all_queues(dev);
 
+	/* TX-done completions are reported with ~3 ms latency. BQL reacts
+	 * by clamping each queue's limit to a single packet, serializing
+	 * TX to one packet per completion round-trip (~314 pps). Keep the
+	 * per-queue floor above the TX ring capacity so the ring stays
+	 * full; this takes TX from ~3.6 Mbit/s to ~92 Mbit/s. */
+#ifdef CONFIG_BQL
+	{
+		unsigned int i;
+
+		for (i = 0; i < dev->num_tx_queues; i++)
+			netdev_get_tx_queue(dev, i)->dql.min_limit = 200000;
+	}
+#endif
+
 	// TODO DSA
 	// if (netdev_uses_dsa(dev))
 	// 	airoha_fe_set(qdma->eth, REG_GDM_INGRESS_CFG(port->id),
@@ -205,9 +219,31 @@ static netdev_tx_t en75_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 	if (skb_linearize(skb))
 		goto error;
 
+	/* QDMA/GDM does not reliably pad runt frames. A default PPPoE PADI
+	 * over VLAN35 is shorter than ETH_ZLEN and is visible on the local
+	 * netdev but not on the wire unless it is padded here. eth_skb_pad()
+	 * frees the skb on error, so do not fall through to the common error
+	 * path in that case. */
+	if (eth_skb_pad(skb)) {
+		dev->stats.tx_dropped++;
+		return NETDEV_TX_OK;
+	}
+	len = skb->len;
+
 	netdev_tx_sent_queue(txq, len);
 
 	ret = en75_qdma_xmit(port->qdma, skb, &msg, 0);
+
+	if (ret == -EBUSY) {
+		/* The TX ring is full. Undo the BQL accounting and ask the
+		 * qdisc to requeue this skb later. We must NOT free it here:
+		 * NETDEV_TX_BUSY means we did not take ownership of the skb,
+		 * so freeing it causes a use-after-free once the qdisc retries
+		 * (seen as crashes in __qdisc_run / skb refcount underflow). */
+		netdev_tx_completed_queue(txq, 1, len);
+		netif_tx_stop_queue(txq);
+		return NETDEV_TX_BUSY;
+	}
 
 	if (ret < 0) {
 		netdev_tx_completed_queue(txq, 1, len);
