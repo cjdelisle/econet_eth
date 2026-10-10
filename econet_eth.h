@@ -209,6 +209,10 @@ struct net_device *en75_alloc_gdm_port(struct en75_eth *eth,
 				       enum etx_fport fport,
 				       bool has_g2_stats);
 
+struct en75_ppe;
+struct en75_ppe *en75_eth_ppe(struct en75_eth *eth);
+void en75_port_enable_ppe_fwd(struct net_device *dev, struct en75_ppe *ppe);
+
 #define en75_rreg(reg) __extension__({ \
 		BUILD_BUG_ON(sizeof(*(reg)) != sizeof(u32)); \
 		union { typeof(*(reg)) v; u32 w; } __r = { .w = readl(reg) }; \
