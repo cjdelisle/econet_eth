@@ -66,7 +66,9 @@ struct dentry;
  * Airoha-only "parse layer info" register (no mainline mtk equivalent). The
  * vendor hw_nat writes it in PpeParseLayerInfo immediately after FLOW_CFG and
  * it is the only PPE-block core-init register the vendor sets that our driver
- * otherwise leaves at reset 0. Value taken verbatim from the vendor blob.
+ * otherwise leaves at reset 0. Value taken verbatim from the vendor blob; its
+ * four bytes (04 2a 11 06) read as per-layer-type enables: IPv4 encap, IPv6
+ * encap, UDP, TCP.
  */
 #define EN75_PPE_PARSE_LAYER_INFO	0x20c
 #define EN75_PPE_PARSE_LAYER_INFO_VAL	0x042a1106

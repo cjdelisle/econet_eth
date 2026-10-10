@@ -95,6 +95,9 @@ int en75_foe_entry_prepare(struct en75_foe_entry *entry, int type, int l4proto,
 
 	/* Route entries keep no L4 ports; the field is poisoned like the
 	 * vendor entry so a partial match never aliases a real port pair.
+	 * 0xa5 is an arbitrary sentinel byte (same idea as 0xdeadbeef),
+	 * repeated across all three pad bytes since only the low byte
+	 * (l4proto) is ever read back.
 	 */
 	ports_pad = 0xa5a5a500 | (l4proto & 0xff);
 	if (type == EN75_PPE_PKT_TYPE_IPV4_ROUTE)
@@ -208,15 +211,14 @@ int en75_foe_entry_set_ipv6_tuple(struct en75_foe_entry *entry,
 				    be16_to_cpu(dest_port);
 		fallthrough;
 	case EN75_PPE_PKT_TYPE_IPV6_ROUTE_3T:
+		for (i = 0; i < 4; i++) {
+			entry->ipv6.src_ip[i] = be32_to_cpu(src_addr[i]);
+			entry->ipv6.dest_ip[i] = be32_to_cpu(dest_addr[i]);
+		}
 		break;
 	default:
 		WARN_ON_ONCE(1);
 		return -EINVAL;
-	}
-
-	for (i = 0; i < 4; i++) {
-		entry->ipv6.src_ip[i] = be32_to_cpu(src_addr[i]);
-		entry->ipv6.dest_ip[i] = be32_to_cpu(dest_addr[i]);
 	}
 
 	return 0;

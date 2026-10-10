@@ -390,34 +390,6 @@ struct en75_ppe *en75_ppe_init(struct device *dev, void __iomem *base,
 	return ppe;
 }
 
-static void en75_ppe_dump_forward_regs(struct en75_ppe *ppe, const char *tag)
-{
-	void __iomem *fe = ppe->fe;
-
-	dev_info(ppe->dev,
-		 "PPE regs %s: ppe_glo=%08x ppe_flow=%08x ppe_tb=%08x ppe_cpu=%08x cache=%08x\n",
-		 tag,
-		 ppe_r32(ppe, EN75_PPE_GLO_CFG),
-		 ppe_r32(ppe, EN75_PPE_FLOW_CFG),
-		 ppe_r32(ppe, EN75_PPE_TB_CFG),
-		 ppe_r32(ppe, EN75_PPE_DEFAULT_CPU_PORT),
-		 ppe_r32(ppe, EN75_PPE_CACHE_CTL));
-
-	/* EN751221 FE-side forwarding blocks. SDK headers disagree between the
-	 * compact FE+0x20 GDMA1 view and the live port-register view around
-	 * FE+0x500, so dump both families for stock/OpenWrt diffing.
-	 */
-	dev_info(ppe->dev,
-		 "PPE regs %s: fe020=%08x fe040=%08x fe044=%08x fe048=%08x fe04c=%08x fe080=%08x fe084=%08x\n",
-		 tag, readl(fe + 0x020), readl(fe + 0x040), readl(fe + 0x044),
-		 readl(fe + 0x048), readl(fe + 0x04c), readl(fe + 0x080),
-		 readl(fe + 0x084));
-	dev_info(ppe->dev,
-		 "PPE regs %s: fe500=%08x fe504=%08x fe508=%08x fe50c=%08x fe510=%08x fe600=%08x\n",
-		 tag, readl(fe + 0x500), readl(fe + 0x504), readl(fe + 0x508),
-		 readl(fe + 0x50c), readl(fe + 0x510), readl(fe + 0x600));
-}
-
 void en75_ppe_start(struct en75_ppe *ppe)
 {
 	u32 val;
@@ -520,8 +492,6 @@ void en75_ppe_start(struct en75_ppe *ppe)
 	 * the vendor's PSE egress port encoding used when a bound flow hits.
 	 */
 	ppe_w32(ppe, EN75_PPE_DEFAULT_CPU_PORT, 0x500);
-
-	en75_ppe_dump_forward_regs(ppe, "start");
 
 	ppe_wait_busy(ppe);
 

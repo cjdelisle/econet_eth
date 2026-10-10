@@ -3,20 +3,17 @@
  * Hardware FOE (Flow Offload Engine) table entry layout for the EcoNet
  * EN751221 PPE.
  *
- * The entry is the MediaTek "netsys v1" 80-byte format (mt7621 class),
- * confirmed against the vendor hw_nat.ko (FoeDumpEntry walks 20 words) and
- * mainline mtk_ppe.h. The field layout below mirrors mainline so the entry
- * construction helpers can be ported with matching offsets. Unlike mainline
- * the mac_info here carries only the v1 fields (20 bytes); that is what makes
- * the IPv6 5-tuple variant come out to exactly 80 bytes.
- *
- * This header only defines the table format; it is not yet wired into the
- * datapath.
+ * The entry is the MediaTek "netsys v1" 80-byte format (mt7621 class). The
+ * field layout below mirrors mainline mtk_ppe.h so the entry construction
+ * helpers can be ported with matching offsets. Unlike mainline the mac_info
+ * here carries only the v1 fields (20 bytes); that is what makes the IPv6
+ * 5-tuple variant come out to exactly 80 bytes.
  */
 #ifndef ECONET_FOE_H
 #define ECONET_FOE_H
 
 #include <linux/bits.h>
+#include <linux/build_bug.h>
 #include <linux/if_ether.h>
 #include <linux/types.h>
 
@@ -109,7 +106,7 @@ struct en75_foe_mac_info {
 #endif
 };
 
-_Static_assert(sizeof(struct en75_foe_mac_info) == 20,
+static_assert(sizeof(struct en75_foe_mac_info) == 20,
 	       "v1 FOE mac_info must be 20 bytes");
 
 struct en75_ipv4_tuple {
@@ -191,7 +188,7 @@ struct en75_foe_entry {
 	};
 };
 
-_Static_assert(sizeof(struct en75_foe_entry) == 80,
+static_assert(sizeof(struct en75_foe_entry) == 80,
 	       "FOE entry must be 80 bytes (MTK v1 layout)");
 
 /* FOE table-entry construction (econet_foe.c). Pure host-memory helpers. */

@@ -14,13 +14,6 @@
  * misses (UN_HIT) the RX path calls en75_ppe_offload_rx_commit() with the
  * slot the hardware itself reported in the descriptor, and the entry is
  * published there - exactly where the engine will look it up.
- *
- * Staged rollout (milestone 2b-3a): every bound flow's egress PSE port is
- * forced to the CPU. A matching packet then surfaces as crsn
- * HIT_BIND_FORCE_CPU(0x16) while still being forwarded by the CPU exactly as
- * before, so the binding can be validated on hardware with no forwarding risk.
- * Flipping EN75_PPE_FORCE_CPU to 0 (milestone 2b-3b) lets the hardware forward
- * the rewritten packet to the real egress port instead.
  */
 #include <linux/bitfield.h>
 #include <linux/debugfs.h>
@@ -87,7 +80,8 @@ struct en75_flow_tuple {
 };
 
 enum en75_flow_state {
-	EN75_FLOW_PENDING = 0,	/* staged, awaiting the hardware slot */
+	EN75_FLOW_INVALID = 0,	/* should never exist; catches a missed init */
+	EN75_FLOW_PENDING,	/* staged, awaiting the hardware slot */
 	EN75_FLOW_COMMITTED,	/* published at ->hash */
 	EN75_FLOW_DEAD,		/* torn down; awaiting RCU free */
 };
@@ -100,7 +94,7 @@ struct en75_flow_entry {
 	struct en75_flow_tuple tuple;
 	struct en75_foe_entry foe;	/* prebuilt; committed lazily by RX */
 	u32 hash;			/* slot, valid once COMMITTED */
-	int state;
+	enum en75_flow_state state;
 	unsigned long last_scan;	/* jiffies of last engine-slot scan */
 };
 
@@ -226,36 +220,38 @@ en75_flow_tuple_from_skb(struct en75_flow_tuple *t, struct sk_buff *skb)
 static void
 en75_flow_offload_mangle_eth(const struct flow_action_entry *act, void *eth)
 {
-#ifdef CONFIG_CPU_BIG_ENDIAN
-	const u8 *vb = (const u8 *)&act->mangle.val;	/* native (BE) bytes */
-	u8 *e = (u8 *)eth;
+	if (IS_ENABLED(CONFIG_CPU_BIG_ENDIAN)) {
+		const u8 *vb = (const u8 *)&act->mangle.val;	/* native (BE) bytes */
+		u8 *e = (u8 *)eth;
 
-	switch (act->mangle.mask) {
-	case 0x00000000:		/* dst[0:4] (off 0) or src[2:6] (off 8) */
-		if (act->mangle.offset <= 8)
-			memcpy(e + act->mangle.offset, vb, 4);
-		break;
-	case 0xffff0000:		/* dst MAC[4:6] -> eth[4:6] */
-		memcpy(e + 4, vb + 2, 2);
-		break;
-	case 0x0000ffff:		/* src MAC[0:2] -> eth[6:8] */
-		memcpy(e + 6, vb, 2);
-		break;
+		switch (act->mangle.mask) {
+		case 0x00000000:	/* dst[0:4] (off 0) or src[2:6] (off 8) */
+			if (act->mangle.offset <= 8)
+				memcpy(e + act->mangle.offset, vb, 4);
+			break;
+		case 0xffff0000:	/* dst MAC[4:6] -> eth[4:6] */
+			memcpy(e + 4, vb + 2, 2);
+			break;
+		case 0x0000ffff:	/* src MAC[0:2] -> eth[6:8] */
+			memcpy(e + 6, vb, 2);
+			break;
+		default:
+			break;
+		}
+	} else {
+		void *dest = eth + act->mangle.offset;
+		const void *src = &act->mangle.val;
+
+		if (act->mangle.offset > 8)
+			return;
+
+		if (act->mangle.mask == 0xffff) {
+			src += 2;
+			dest += 2;
+		}
+
+		memcpy(dest, src, act->mangle.mask ? 2 : 4);
 	}
-#else
-	void *dest = eth + act->mangle.offset;
-	const void *src = &act->mangle.val;
-
-	if (act->mangle.offset > 8)
-		return;
-
-	if (act->mangle.mask == 0xffff) {
-		src += 2;
-		dest += 2;
-	}
-
-	memcpy(dest, src, act->mangle.mask ? 2 : 4);
-#endif
 }
 
 static int
@@ -315,16 +311,16 @@ en75_flow_set_ipv4_addr(struct en75_foe_entry *foe, struct en75_flow_data *data,
 static int
 en75_ppe_offload_replace(struct en75_ppe *ppe, struct flow_cls_offload *f)
 {
-	struct flow_rule *rule = flow_cls_offload_flow_rule(f);
+	struct en75_flow_tuple keytuple;
 	struct flow_action_entry *act;
-	struct en75_flow_data data = {};
 	struct en75_flow_entry *entry;
+	struct en75_flow_data data = {};
 	struct en75_foe_entry foe;
+	struct flow_rule *rule = flow_cls_offload_flow_rule(f);
+	struct net_device *odev = NULL;
 	int offload_type = 0;
 	u16 addr_type = 0;
 	u8 l4proto = 0;
-	struct en75_flow_tuple keytuple;
-	struct net_device *odev = NULL;
 	int err = 0;
 	int i;
 
@@ -419,8 +415,7 @@ en75_ppe_offload_replace(struct en75_ppe *ppe, struct flow_cls_offload *f)
 	 * Wi-Fi netdev, or the ingress side of an unresolved forward path
 	 * (XMIT_NEIGH redirects to the other direction's iif) - must stay
 	 * on the software path: binding it would switch the packets out
-	 * the wired ports and black-hole the flow. This is what broke
-	 * Wi-Fi clients' download while wired stayed at line rate.
+	 * the wired ports and black-hole the flow.
 	 */
 	if (!odev || odev != ppe->ndev) {
 		en75_diag[EN75_DIAG_REPL_REJ_ODEV]++;
@@ -433,12 +428,6 @@ en75_ppe_offload_replace(struct en75_ppe *ppe, struct flow_cls_offload *f)
 		return -EINVAL;
 	}
 
-	/* Milestone 2b-3a forces the egress to the CPU: the entry is fully
-	 * built (incl. the L2 rewrite from the eth mangle actions) but the
-	 * packet stays on the CPU path, so a hit is observable (crsn
-	 * HIT_BIND_FORCE_CPU) with no forwarding risk. 3b resolves the
-	 * REDIRECT odev to a GDM port and uses it here instead.
-	 */
 	/* Egress to the GDM port that feeds the external MT7530 over TRGMII.
 	 * The L2 rewrite (incl. the VLAN push from the flow actions) tells the
 	 * switch which physical port to use, so a single GDM serves LAN+WAN.
@@ -614,9 +603,9 @@ en75_ppe_offload_stats(struct en75_ppe *ppe, struct flow_cls_offload *f)
 	if (!entry)
 		return -ENOENT;
 
-	/* Hardware accounting is not wired up yet (milestone 2b-4); report the
-	 * flow as freshly used so the software flowtable does not reap it. The
-	 * flow is still torn down via FLOW_CLS_DESTROY when conntrack expires.
+	/* Hardware accounting is not wired up yet; report the flow as freshly
+	 * used so the software flowtable does not reap it. The flow is still
+	 * torn down via FLOW_CLS_DESTROY when conntrack expires.
 	 */
 	f->stats.lastused = jiffies;
 
@@ -684,20 +673,27 @@ static bool en75_ppe_slot_matches(struct en75_ppe *ppe, u32 i,
  * Verified on hardware: hw_slot 40->16, 6840->2736, 4440->1776, 4510->1804.
  *
  * But ppe_entry is only 14 bits (max 16383) while real_slot*5/2 reaches 40957
- * for the upper slots, so the field is TRUNCATED mod 16384. real_slot is always
- * even (hash<<1), so real_slot*5/2 = 5*hash and the truncation drops whole
- * multiples of 16384: field = 5*hash - m*16384 with the wrap count m in {0,1,2}
- * (5*hash <= 40955 < 3*16384). m is recoverable directly: since -16384 == 1 mod
- * 5, field mod 5 == (5*hash - m*16384) mod 5 == m. Undo the wrap before scaling:
+ * for the upper slots, so the field is TRUNCATED mod 16384. Every slot this
+ * O(1) path is asked to produce is a *primary* hash slot (hash<<1, see
+ * EN75_PPE_HASH_OFFSET in econet_foe.h: two FOE entries share a bucket, and
+ * only the even bucket-base address is ever computed by a hash function -
+ * the odd "second way" of a colliding pair is the engine's own choice, never
+ * ours), so real_slot is always even here and real_slot*5/2 = 5*hash. The
+ * truncation then drops whole multiples of 16384: field = 5*hash - m*16384
+ * with the wrap count m in {0,1,2} (5*hash <= 40955 < 3*16384). m is
+ * recoverable directly: since -16384 == 1 mod 5, field mod 5 == (5*hash -
+ * m*16384) mod 5 == m. Undo the wrap before scaling:
  *   real_slot = (hw_slot + (hw_slot % 5) * 16384) * 2 / 5
  * This makes the upper ~60% of the table O(1) too (previously they missed the
  * scaled guess and fell through to the full scan, pinning the CPU in softirq).
- * The scan stays only as a safety net for a genuinely unexpected descriptor.
+ * If the engine ever reports the odd "second way" slot of a bucket instead
+ * (a real 2-way collision), this formula is not guaranteed to invert it
+ * correctly - the full scan below remains the safety net for exactly that
+ * case, and for any other genuinely unexpected descriptor.
  */
 /*
- * The engine's FOE hash for IPv4, recovered from the vendor FoeHashFun (MODE1
- * path, decoded from hw_nat.dis) and verified on hardware against the engine's
- * learned UNBIND slots (30/30 exact). FoeHashFun returns the descriptor-scaled
+ * The engine's FOE hash for IPv4, verified on hardware against the engine's
+ * own learned UNBIND slots (30/30 exact). It returns the descriptor-scaled
  * value (real_slot * 5/2), so the live table index is that * 2 / 5. Inputs are
  * the host-order orig tuple, exactly as staged in entry->foe:
  *   s1 = ports, s3 = dest_ip, s6 = src_ip
@@ -748,16 +744,10 @@ static int en75_ppe_find_engine_slot(struct en75_ppe *ppe,
 		return (i < EN75_PPE_ENTRIES) ? (int)i : -1;
 	}
 
-	/* IPv6 uses a different hash; fall back to the descriptor-scaled
-	 * candidate plus a scan for the engine's learned UNBIND. */
-	cand = (hw_slot + (hw_slot % 5) * EN75_PPE_ENTRIES) * 2 / 5;
-	if (en75_ppe_slot_matches(ppe, cand, want))
-		return cand;
-
-	for (i = 0; i < EN75_PPE_ENTRIES; i++)
-		if (en75_ppe_slot_matches(ppe, i, want))
-			return i;
-
+	/* IPv6 has no equivalent recovered hash; the descriptor-scaled
+	 * candidate and the full scan above already covered every type,
+	 * so there is nothing left to try.
+	 */
 	return -1;
 }
 
@@ -860,9 +850,8 @@ int en75_ppe_offload_cmd(struct en75_ppe *ppe, struct flow_cls_offload *cls)
  * ndo_setup_tc of its own, so the offload is delivered through the indirect
  * block mechanism instead of the port's direct ndo_setup_tc. We accept every
  * such device: a flow that does not actually traverse our hardware simply
- * never matches a packet and ages out, and milestone 2b-3a forces every bound
- * flow to the CPU anyway. 3b will narrow this to devices that resolve to a GDM
- * port and pick the egress accordingly.
+ * never matches a packet and ages out, and en75_ppe_offload_replace() already
+ * rejects anything whose resolved egress is not GDM1.
  */
 struct en75_indr_priv {
 	struct list_head list;
