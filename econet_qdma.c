@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
+#include <linux/err.h>
 #include <linux/spinlock.h>
 #include <linux/netdevice.h>
 #include <net/page_pool/helpers.h>
@@ -166,9 +167,11 @@ static void en75_qdma_rx_process_one(struct en75_q_rx *q, u32 cpu_i,
 	struct en75_q_rx_ent *e = &q->entry[cpu_i];
 	struct sk_buff *skb;
 	struct page *page;
+	struct en75_ppe *ppe;
 	struct desc desc;
 	u32 hash;
 	u8 sport;
+	u8 crsn;
 	int len;
 
 	memcpy(&desc, &q->desc[cpu_i], sizeof(desc));
@@ -201,14 +204,19 @@ static void en75_qdma_rx_process_one(struct en75_q_rx *q, u32 cpu_i,
 	skb_set_hash(skb, jhash_1word(hash, 0),
 		     PKT_HASH_TYPE_L4);
 
-	switch (get_erx_crsn(&desc.msg.erx)) {
+	crsn = get_erx_crsn(&desc.msg.erx);
+	ppe = en75_eth_ppe(q->qdma->eth);
+	if (!IS_ERR_OR_NULL(ppe))
+		ppe->diag_crsn[crsn]++;
+
+	switch (crsn) {
 	case EN75_PPE_CRSN_UN_HIT:
 	case EN75_PPE_CRSN_HIT_UNBIND:
 	case EN75_PPE_CRSN_HIT_UNBIND_RATE_REACHED:
 		/* A staged (PENDING) offload entry, if any, is published at
 		 * the slot the engine itself just reported for this miss.
 		 */
-		en75_ppe_offload_rx_commit(en75_eth_ppe(q->qdma->eth), skb, hash);
+		en75_ppe_offload_rx_commit(ppe, skb, hash);
 		break;
 	default:
 		break;

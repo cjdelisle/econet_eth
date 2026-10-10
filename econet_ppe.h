@@ -171,9 +171,6 @@ enum en75_diag_id {
 	EN75_DIAG_REPL_REJ_PORTS,
 	EN75_DIAG_COUNT,
 };
-extern u32 en75_diag[EN75_DIAG_COUNT];
-extern u32 en75_diag_crsn[32];
-
 struct en75_ppe {
 	struct device		*dev;
 	/* GDM1's netdev: the only egress the FOE can forward to. */
@@ -196,6 +193,9 @@ struct en75_ppe {
 	/* tuple -> en75_flow_entry map, drives the RX-hint commit. */
 	struct rhashtable	tuple_table;
 	bool			tuple_table_ready;
+	/* debugfs "diag" counters (en75_diag_show). */
+	u32			diag[EN75_DIAG_COUNT];
+	u32			diag_crsn[32];
 };
 
 /**
