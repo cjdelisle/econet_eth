@@ -255,6 +255,15 @@ en75_flow_offload_mangle_eth(const struct flow_action_entry *act, void *eth)
 	}
 }
 
+/*
+ * act->mangle.mask marks the bits that are PRESERVED, not the bits being
+ * written (standard pedit/flow_action convention: new = (old & mask) |
+ * (val & ~mask)) - so mask == ~htonl(0xffff) (preserve the upper/src-port
+ * half) means this mangle is replacing dst_port, and vice versa. val is
+ * ntohl()'d once up front so val's high 16 bits are always src_port and
+ * the low 16 are always dst_port, regardless of which half the mask says
+ * to replace.
+ */
 static int
 en75_flow_mangle_ports(const struct flow_action_entry *act,
 		       struct en75_flow_data *data)
