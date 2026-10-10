@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * nf_flowtable / TC flower offload glue for the EcoNet EN751221 PPE.
+ * nf_flowtable / TC flower offload glue for the EcoNet PPE (EN751221/EN7528).
  *
  * Ported from the mainline mtk_ppe_offload.c (Felix Fietkau), trimmed to the
- * netsys-v1 path this hardware implements: no WED, no DSA, no netsys-v2 fields.
+ * netsys-v1 FOE table format both chips implement, with no netsys-v2 fields.
+ * Neither DSA nor WED (present on EN7528, not on EN751221) are wired up yet.
  * A flow offered by the kernel flowtable is translated into an 80-byte FOE
  * entry with the econet_foe.c builders and committed into the live table.
  *
