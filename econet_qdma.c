@@ -15,6 +15,15 @@
 #include "qdma_desc.h"
 #include "qdma_regs.h"
 #include "econet_eth.h"
+#include "econet_ppe.h"
+
+/* PPE CPU_REASON codes (erx crsn field) relevant to flow-offload RX hints:
+ * all three mean the engine missed and, under SEARCH_MISS=FORWARD_BUILD,
+ * auto-learned an UNBIND entry at its real search slot for this tuple.
+ */
+#define EN75_PPE_CRSN_UN_HIT			0x0d
+#define EN75_PPE_CRSN_HIT_UNBIND		0x0e
+#define EN75_PPE_CRSN_HIT_UNBIND_RATE_REACHED	0x0f
 
 /* The non-dma part of RX packet descriptor */
 struct en75_q_rx_ent {
@@ -192,8 +201,18 @@ static void en75_qdma_rx_process_one(struct en75_q_rx *q, u32 cpu_i,
 	skb_set_hash(skb, jhash_1word(hash, 0),
 		     PKT_HASH_TYPE_L4);
 
-	/* TODO: When we begin supporting the PPE, we will handle
-	 *       PPE_CPU_REASON_HIT_UNBIND_RATE_REACHED here. */
+	switch (get_erx_crsn(&desc.msg.erx)) {
+	case EN75_PPE_CRSN_UN_HIT:
+	case EN75_PPE_CRSN_HIT_UNBIND:
+	case EN75_PPE_CRSN_HIT_UNBIND_RATE_REACHED:
+		/* A staged (PENDING) offload entry, if any, is published at
+		 * the slot the engine itself just reported for this miss.
+		 */
+		en75_ppe_offload_rx_commit(en75_eth_ppe(q->qdma->eth), skb, hash);
+		break;
+	default:
+		break;
+	}
 
 	sport = get_erx_sport(&desc.msg.erx);
 	if (en75_rx_before_recv(q->qdma->eth, skb, sport))
