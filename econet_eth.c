@@ -39,6 +39,7 @@
 #include <linux/of_net.h>
 
 #include "gdm_regs.h"
+#include "econet_ppe.h"
 #include "linux/dev_printk.h"
 #include "linux/ioport.h"
 #include "linux/mdio.h"
@@ -97,6 +98,7 @@ struct en75_eth_pvt {
 	int				qdma_irq[EN75_NUM_QDMA * QDMA_NUM_IRQS];
 	struct en75_qdma		*qdma[EN75_NUM_QDMA];
 	struct en75_debug		*debug;
+	struct en75_ppe			*ppe;
 	/* Whether our register window covers the on-die switch, see probe. */
 	bool				has_switch_regs;
 };
@@ -152,6 +154,13 @@ static struct net_device *en75_get_sport_dev(struct en75_eth_pvt *eth,
 			dev_info(eth->pub.dev, "rx: on unexpected fport %d\n", sport);
 		return eth->ports[0];
 	}
+}
+
+struct en75_ppe *en75_eth_ppe(struct en75_eth *eth)
+{
+	struct en75_eth_pvt *ep = (struct en75_eth_pvt *) eth;
+
+	return ep->ppe;
 }
 
 int en75_rx_before_recv(struct en75_eth *eth, struct sk_buff *skb,
@@ -290,6 +299,8 @@ static void en75_remove(struct platform_device *pdev)
 	if (!eth)
 		return;
 
+	en75_ppe_stop(eth->ppe);
+
 	en75_debugfs_exit(eth->debug);
 
 	for (i = 0; i < ARRAY_SIZE(eth->qdma); i++)
@@ -408,6 +419,21 @@ static int en75_probe(struct platform_device *pdev)
 	}
 
 	eth->debug = en75_debugfs_init(&debug_conf);
+
+	/* The PPE is optional: if it cannot be brought up (e.g. the FOE
+	 * table allocation fails) carry on without hardware offload rather
+	 * than failing the whole device. */
+	eth->ppe = en75_ppe_init(&pdev->dev, eth->regs->ppe, eth->regs->fe);
+	if (IS_ERR(eth->ppe)) {
+		dev_warn(&pdev->dev, "PPE init failed (%pe), offload disabled\n",
+			 eth->ppe);
+		eth->ppe = NULL;
+	} else {
+		en75_ppe_start(eth->ppe);
+		for (i = 0; i < ARRAY_SIZE(eth->ports); i++)
+			if (eth->ports[i])
+				en75_port_enable_ppe_fwd(eth->ports[i], eth->ppe);
+	}
 
 	/* Configure the MT7530 as a dumb switch, unless it is managed by DSA */
 	if (eth->has_switch_regs) {
