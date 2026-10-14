@@ -38,6 +38,9 @@ struct en75_q_rx {
 	int				buf_size;
 	struct napi_struct		napi;
 	struct page_pool		*page_pool;
+
+	/* Experimental RX latency watchdog, see en75_rx_kick(). */
+	struct hrtimer			kick;
 };
 
 /* The non-dma part of TX packet descriptor */
@@ -441,7 +444,7 @@ static irqreturn_t en75_irq_handler(int irq_num, void *dev_instance)
  * Instead of relying on the hardware, poll for completions shortly
  * after every submission and keep polling while anything is in
  * flight. */
-#define EN75_TX_DONE_KICK_NS	150000
+#define EN75_TX_DONE_KICK_NS	500000
 
 static enum hrtimer_restart en75_tx_done_kick(struct hrtimer *t)
 {
@@ -459,6 +462,39 @@ static void en75_tx_done_kick_arm(struct en75_tx_doneq *done_q)
 		hrtimer_start(&done_q->kick,
 			      ns_to_ktime(EN75_TX_DONE_KICK_NS),
 			      HRTIMER_MODE_REL);
+}
+
+/* RX DONE interrupts can be delayed until an unrelated timer interrupt runs
+ * the shared handler, producing a 10 ms sawtooth in host-terminated ping
+ * latency. Poll RX shortly while the QDMA engine is in use so echo requests
+ * are delivered to the stack without waiting for the jiffy tick.
+ */
+#define EN75_RX_KICK_NS		1000000
+
+static enum hrtimer_restart en75_rx_kick(struct hrtimer *t)
+{
+	struct en75_q_rx *q = container_of(t, struct en75_q_rx, kick);
+	struct en75_qdma *qdma = q->qdma;
+
+	if (!READ_ONCE(qdma->users) || READ_ONCE(qdma->destroying))
+		return HRTIMER_NORESTART;
+
+	/* Only wake NAPI if the ring actually has unprocessed descriptors.
+	 * Under load the real RX-DONE IRQ already drains the ring, so an
+	 * unconditional napi_schedule here just burns a softirq every tick
+	 * and adds scheduler/timer pressure; the poll is only needed for the
+	 * occasional packet the (edge-only) RX-DONE IRQ failed to signal. */
+	if (en75_rreg(&q->qchain_regs->rx_hwi) != (q->cpu_i + 1) % q->ndesc)
+		napi_schedule(&q->napi);
+	hrtimer_forward_now(t, ns_to_ktime(EN75_RX_KICK_NS));
+
+	return HRTIMER_RESTART;
+}
+
+static void en75_rx_kick_start(struct en75_q_rx *q)
+{
+	hrtimer_start(&q->kick, ns_to_ktime(EN75_RX_KICK_NS),
+		      HRTIMER_MODE_REL);
 }
 
 static int en75_poll_tx_complete(struct napi_struct *napi, int budget)
@@ -704,6 +740,9 @@ static int en75_init_rx_queue(struct en75_q_rx *q,
 	memset(q->desc, 0, sizeof(*q->desc));
 
 	netif_napi_add(qdma->napi_dev, &q->napi, en75_qdma_rx_napi_poll);
+
+	hrtimer_setup(&q->kick, en75_rx_kick,
+		      CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 
 	en75_wreg(dma_addr, &q->qchain_regs->rxbase);
 	
@@ -1104,6 +1143,7 @@ static int en75_qdma_destroy_locked(struct en75_qdma *qdma)
 	for (i = 0; i < ARRAY_SIZE(qdma->q_rx); i++) {
 		struct en75_q_rx *q = &qdma->q_rx[i];
 		en75_qdma_destroy_rxq_locked(q);
+		hrtimer_cancel(&q->kick);
 		netif_napi_del(&q->napi);
 	}
 
@@ -1146,8 +1186,10 @@ int en75_qdma_use(struct en75_qdma *qdma)
 	set_qregs_qcfg_tx_dma_en(&qcfg, true);
 	en75_wreg(qcfg, &qdma->regs->qdma_cfg);
 
-	for (i = 0; i < ARRAY_SIZE(qdma->q_rx); i++)
+	for (i = 0; i < ARRAY_SIZE(qdma->q_rx); i++) {
 		napi_enable(&qdma->q_rx[i].napi);
+		en75_rx_kick_start(&qdma->q_rx[i]);
+	}
 
 	for (i = 0; i < ARRAY_SIZE(qdma->q_tx_done); i++)
 		napi_enable(&qdma->q_tx_done[i].napi);
@@ -1170,8 +1212,10 @@ int en75_qdma_unuse(struct en75_qdma *qdma)
 	set_qregs_qcfg_tx_dma_en(&qcfg, false);
 	en75_wreg(qcfg, &qdma->regs->qdma_cfg);
 
-	for (i = 0; i < ARRAY_SIZE(qdma->q_rx); i++)
+	for (i = 0; i < ARRAY_SIZE(qdma->q_rx); i++) {
+		hrtimer_cancel(&qdma->q_rx[i].kick);
 		napi_disable(&qdma->q_rx[i].napi);
+	}
 
 	for (i = 0; i < ARRAY_SIZE(qdma->q_tx_done); i++) {
 		hrtimer_cancel(&qdma->q_tx_done[i].kick);
@@ -1235,7 +1279,11 @@ struct en75_qdma *en75_qdma_new(struct en75_eth *eth,
 	if (!qdma->napi_dev)
 		return ERR_PTR(-ENOMEM);
 
-	qdma->napi_dev->threaded = true;
+	/* Threaded NAPI adds scheduler latency on this target; keep the
+	 * latency-sensitive QDMA RX/TX-completion path in softirq context.
+	 */
+	qdma->napi_dev->threaded = false;
+
 	snprintf(qdma->napi_dev->name, sizeof qdma->napi_dev->name, "qdma%d_eth", id);
 
 	err = en75_init(eth->dev, qdma, irqs, num_irqs);
