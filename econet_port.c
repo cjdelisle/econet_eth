@@ -12,8 +12,11 @@
 #include <linux/platform_device.h>
 #include <linux/reset.h>
 #include <linux/of_net.h>
+#include <net/flow_offload.h>
+#include <net/pkt_cls.h>
 
 #include "econet_eth.h"
+#include "econet_ppe.h"
 #include "gdm_regs.h"
 #include "qdma_desc.h"
 
@@ -56,6 +59,9 @@ struct en75_hw_stats {
 
 	/* Protects accesses to hardware regs */
 	spinlock_t reg_lock;
+
+	/* PPE engine for flow-table offload; NULL if offload is off. */
+	struct en75_ppe *ppe;
 
 	struct en75_hw_stats stats;
 
@@ -124,6 +130,37 @@ static void en75_set_gdm_port_fwd_cfg(struct en75_gdm_port *port,
 	set_gdm_fwd_cfg_default_fport(&fc, val);
 	set_gdm_fwd_cfg_drop_oversize(&fc, true);
 	en75_wreg(fc, &port->regs->fwd_cfg);
+}
+
+/*
+ * Route routed/NAT traffic to the PPE for hardware offload. Until flows are
+ * bound the PPE misses every packet and punts it to the CPU, so behaviour is
+ * functionally unchanged. Called from probe once the PPE has been started.
+ */
+void en75_port_enable_ppe_fwd(struct net_device *dev, struct en75_ppe *ppe)
+{
+	struct en75_gdm_port *port = netdev_priv(dev);
+	struct fwd_cfg fc;
+	u32 old;
+
+	port->ppe = ppe;
+	/* Bound FOE entries always egress via GDM1 (the first port); remember
+	 * its netdev so the offload path can refuse flows leaving elsewhere. */
+	if (!ppe->ndev)
+		ppe->ndev = dev;
+
+	guard(spinlock)(&port->reg_lock);
+	fc = en75_rreg(&port->regs->fwd_cfg);
+	old = fc.word;
+	set_gdm_fwd_cfg_mymac_fport(&fc, ETX_FPORT_PPE);
+	set_gdm_fwd_cfg_default_fport(&fc, ETX_FPORT_PPE);
+	en75_wreg(fc, &port->regs->fwd_cfg);
+
+	netdev_info(dev, "PPE GDM fwd_cfg: old=%08x new=%08x mymac=%u bcast=%u mcast=%u default=%u\n",
+		    old, fc.word, get_gdm_fwd_cfg_mymac_fport(&fc),
+		    get_gdm_fwd_cfg_bcast_fport(&fc),
+		    get_gdm_fwd_cfg_mcast_fport(&fc),
+		    get_gdm_fwd_cfg_default_fport(&fc));
 }
 
 static int en75_dev_init(struct net_device *dev)
@@ -211,6 +248,16 @@ static netdev_tx_t en75_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 	set_etx_channel(&msg.etx, qid / EN75_NUM_QUEUES);
 	set_etx_queue(&msg.etx, qid % EN75_NUM_QUEUES);
 	set_etx_fport(&msg.etx, port->fport);
+
+	/* The QDMA generates the IP/TCP/UDP checksums on demand (the ICO/
+	 * UCO/TCO enables in the TX message). Setting all three is safe:
+	 * the hardware only applies the ones matching the parsed packet,
+	 * the same convention mtk_eth_soc uses for TX_DMA_CHKSUM. */
+	if (skb->ip_summed == CHECKSUM_PARTIAL) {
+		set_etx_ico(&msg.etx, true);
+		set_etx_uco(&msg.etx, true);
+		set_etx_tco(&msg.etx, true);
+	}
 
 	txq = netdev_get_tx_queue(dev, qid);
 
@@ -470,14 +517,16 @@ struct net_device *en75_alloc_gdm_port(struct en75_eth *eth,
 	 * NETIF_F_TSO | NETIF_F_TSO6:
 	 *   - Supported in EN751627, not in EN751221, not used in forwarding.
 	 *
-	 * NETIF_F_IP_CSUM | NETIF_F_RXCSUM | NETIF_F_IPV6_CSUM:
-	 *   - Supported but disabled for simplicity.
+	 * NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM:
+	 *   - TX checksum generation via the ICO/UCO/TCO enables in the TX
+	 *     message. Matters for the CPU path (Wi-Fi forwarding, tunnels,
+	 *     locally originated traffic); the PPE path never sees the CPU.
 	 *
 	 * NETIF_F_HW_TC:
 	 *   - TODO: When we get the PPE working, we will enable this for
 	 *           TC_SETUP_BLOCK / TC_SETUP_FT for NAT flow-table offloading.
 	 */
-	ndev->hw_features = 0;
+	ndev->hw_features = NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM;
 
 	ndev->features |= ndev->hw_features;
 	ndev->vlan_features = ndev->hw_features;
