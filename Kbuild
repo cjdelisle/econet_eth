@@ -1,5 +1,11 @@
-obj-m := econet-eth.o mt7530-mdio.o mt7530-mmio.o mt7530.o
+obj-m := econet-eth.o
+
 econet-eth-y := econet_eth.o econet_eth_debug.o econet_qdma.o econet_port.o
+
+ifeq ($(CONFIG_NET_DSA_MT7530_EXT),y)
+obj-m += mt7530-mdio.o mt7530-mmio.o mt7530.o
+
 mt7530-y := gsw/mt7530.o
 mt7530-mdio-y := gsw/mt7530-mdio.o
 mt7530-mmio-y := gsw/mt7530-mmio.o
+endif
