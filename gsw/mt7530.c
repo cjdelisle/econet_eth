@@ -1560,7 +1560,43 @@ mt753x_trap_frames(struct mt7530_priv *priv)
 }
 
 static int
-mt7530_port_change_mtu(struct dsa_switch *ds, int port, int new_mtu);
+mt7530_port_change_mtu(struct dsa_switch *ds, int port, int new_mtu)
+{
+	struct mt7530_priv *priv = ds->priv;
+	int length;
+	u32 val;
+
+	if (priv->is_passthrough)
+		return 0;
+
+	/* When a new MTU is set, DSA always set the CPU port's MTU to the
+	 * largest MTU of the user ports. Because the switch only has a global
+	 * RX length register, only allowing CPU port here is enough.
+	 */
+	if (!dsa_is_upstream_port(ds, port))
+		return 0;
+
+	regmap_read(priv->regmap, MT7530_GMACCR, &val);
+	val &= ~MAX_RX_PKT_LEN_MASK;
+
+	/* RX length also includes Ethernet header, MTK tag, and FCS length */
+	length = new_mtu + ETH_HLEN + MTK_HDR_LEN + ETH_FCS_LEN;
+	if (length <= 1522) {
+		val |= MAX_RX_PKT_LEN_1522;
+	} else if (length <= 1536) {
+		val |= MAX_RX_PKT_LEN_1536;
+	} else if (length <= 1552) {
+		val |= MAX_RX_PKT_LEN_1552;
+	} else {
+		val &= ~MAX_RX_JUMBO_MASK;
+		val |= MAX_RX_JUMBO(DIV_ROUND_UP(length, 1024));
+		val |= MAX_RX_PKT_LEN_JUMBO;
+	}
+
+	regmap_write(priv->regmap, MT7530_GMACCR, val);
+
+	return 0;
+}
 
 /* If this switch is downstream of another switch that is in passthrough mode,
  * the "CPU" port is actually a DSA port.
@@ -1706,45 +1742,6 @@ mt7530_port_disable(struct dsa_switch *ds, int port)
 		regmap_set_bits(priv->regmap, MT753X_MTRAP, MT7530_P5_DIS);
 	else if (port == 6)
 		regmap_set_bits(priv->regmap, MT753X_MTRAP, MT7530_P6_DIS);
-}
-
-static int
-mt7530_port_change_mtu(struct dsa_switch *ds, int port, int new_mtu)
-{
-	struct mt7530_priv *priv = ds->priv;
-	int length;
-	u32 val;
-
-	if (priv->is_passthrough)
-		return 0;
-
-	/* When a new MTU is set, DSA always set the CPU port's MTU to the
-	 * largest MTU of the user ports. Because the switch only has a global
-	 * RX length register, only allowing CPU port here is enough.
-	 */
-	if (!dsa_is_upstream_port(ds, port))
-		return 0;
-
-	regmap_read(priv->regmap, MT7530_GMACCR, &val);
-	val &= ~MAX_RX_PKT_LEN_MASK;
-
-	/* RX length also includes Ethernet header, MTK tag, and FCS length */
-	length = new_mtu + ETH_HLEN + MTK_HDR_LEN + ETH_FCS_LEN;
-	if (length <= 1522) {
-		val |= MAX_RX_PKT_LEN_1522;
-	} else if (length <= 1536) {
-		val |= MAX_RX_PKT_LEN_1536;
-	} else if (length <= 1552) {
-		val |= MAX_RX_PKT_LEN_1552;
-	} else {
-		val &= ~MAX_RX_JUMBO_MASK;
-		val |= MAX_RX_JUMBO(DIV_ROUND_UP(length, 1024));
-		val |= MAX_RX_PKT_LEN_JUMBO;
-	}
-
-	regmap_write(priv->regmap, MT7530_GMACCR, val);
-
-	return 0;
 }
 
 static int
@@ -2527,10 +2524,7 @@ mt7530_gpio_set(struct gpio_chip *gc, unsigned int offset, int value)
 	struct mt7530_priv *priv = gpiochip_get_data(gc);
 	u32 bit = mt7530_gpio_to_bit(offset);
 
-	if (value)
-		regmap_set_bits(priv->regmap, MT7530_LED_GPIO_DATA, bit);
-	else
-		regmap_clear_bits(priv->regmap, MT7530_LED_GPIO_DATA, bit);
+	regmap_assign_bits(priv->regmap, MT7530_LED_GPIO_DATA, bit, value);
 
 	return 0;
 }
@@ -2568,10 +2562,7 @@ mt7530_gpio_direction_output(struct gpio_chip *gc, unsigned int offset, int valu
 
 	regmap_set_bits(priv->regmap, MT7530_LED_GPIO_DIR, bit);
 
-	if (value)
-		regmap_set_bits(priv->regmap, MT7530_LED_GPIO_DATA, bit);
-	else
-		regmap_clear_bits(priv->regmap, MT7530_LED_GPIO_DATA, bit);
+	regmap_assign_bits(priv->regmap, MT7530_LED_GPIO_DATA, bit, value);
 
 	regmap_set_bits(priv->regmap, MT7530_LED_GPIO_OE, bit);
 
@@ -3636,6 +3627,10 @@ mt753x_setup(struct dsa_switch *ds)
 	if (ret)
 		return ret;
 
+	/*
+	 * This must be called before mt753x_setup() returns because the DSA
+	 * core synchronously sets up ports and expects PHYs to be operational.
+	 */
 	ret = mt7530_setup_mdio(priv);
 	if (ret)
 		return ret;
@@ -4080,9 +4075,6 @@ EXPORT_SYMBOL_GPL(mt7530_probe_common);
 void
 mt7530_remove_common(struct mt7530_priv *priv)
 {
-	if (priv->irq_domain)
-		mt7530_free_mdio_irq(priv);
-
 	dsa_unregister_switch(priv->ds);
 
 	mutex_destroy(&priv->reg_mutex);

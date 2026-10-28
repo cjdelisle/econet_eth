@@ -67,6 +67,13 @@ mt7988_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
+	/*
+	 * If not all switches in the hierarchy have been probed,
+	 * dsa_register_switch() returns 0 without calling mt753x_setup().
+	 * Call mt7530_setup_mdio() because there's a chance that the missing
+	 * switch is on the MDIO bus. Do not call this before
+	 * dsa_register_switch() as it  may exit with an error.
+	 */
 	mt7530_setup_mdio(priv);
 
 	return 0;
