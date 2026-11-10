@@ -20,6 +20,12 @@
 #include "gdm_regs.h"
 #include "qdma_desc.h"
 
+/* GDM special tag mode (stag_en), as the vendor driver configures it on
+ * EN7528: the MTK tag stays inline in both directions, the PPE parses it
+ * and the RX descriptor reports the source as 8 + switch port. */
+bool en75_hw_stag = true;
+module_param(en75_hw_stag, bool, 0444);
+
 struct en75_hw_stats {
 	/* protect concurrent hw_stats accesses */
 	spinlock_t lock;
@@ -190,6 +196,10 @@ static int en75_dev_open(struct net_device *dev)
 		u32 __iomem *vreg = (u32 __iomem *)&port->regs->vlan;
 
 		writel(readl(vreg) | BIT(0), vreg);
+		if (en75_hw_stag)
+			writel(1, &port->regs->stag_en);
+		netdev_info(dev, "special tag: vlan %08x stag_en %08x\n",
+			    readl(vreg), readl(&port->regs->stag_en));
 	}
 
 	// TODO DSA

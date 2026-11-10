@@ -235,6 +235,22 @@ en75_flow_tuple_from_skb(struct en75_flow_tuple *t, struct sk_buff *skb,
 static void
 en75_flow_offload_mangle_eth(const struct flow_action_entry *act, void *eth)
 {
+#ifndef CONFIG_CPU_BIG_ENDIAN
+	/* Little-endian (EN7528): the encoding matches the CPU, so the
+	 * upstream mtk_flow_offload_mangle_eth() byte copy is right. */
+	void *dest = eth + act->mangle.offset;
+	const void *src = &act->mangle.val;
+
+	if (act->mangle.offset > 8)
+		return;
+
+	if (act->mangle.mask == 0xffff) {
+		src += 2;
+		dest += 2;
+	}
+
+	memcpy(dest, src, act->mangle.mask ? 2 : 4);
+#else
 	const u8 *vb = (const u8 *)&act->mangle.val;	/* native (BE) bytes */
 	u8 *e = (u8 *)eth;
 
@@ -258,6 +274,7 @@ en75_flow_offload_mangle_eth(const struct flow_action_entry *act, void *eth)
 		WARN_ON_ONCE(1);
 		break;
 	}
+#endif
 }
 
 /*

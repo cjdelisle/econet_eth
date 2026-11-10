@@ -48,6 +48,10 @@
 #include "qdma_regs.h"
 #include "econet_eth.h"
 
+static bool en75_ppe = true;
+module_param(en75_ppe, bool, 0444);
+MODULE_PARM_DESC(en75_ppe, "Use the PPE for hardware flow offload");
+
 /* MT7530 switch configuration */
 #define  PMCR_FORCE_FDX			BIT(1)
 #define  PMCR_FORCE_LNK			BIT(0)
@@ -150,7 +154,8 @@ static struct net_device *en75_get_sport_dev(struct en75_eth_pvt *eth,
 	if (sport == ETX_FPORT_GDM2) {
 		return eth->ports[1];
 	} else {
-		if (sport != ETX_FPORT_GDM1)
+		/* with the GDM special tag on, 8 + switch port = GDM1 */
+		if (sport != ETX_FPORT_GDM1 && !(en75_hw_stag && sport >= 8))
 			dev_info(eth->pub.dev, "rx: on unexpected fport %d\n", sport);
 		return eth->ports[0];
 	}
@@ -423,7 +428,8 @@ static int en75_probe(struct platform_device *pdev)
 	/* The PPE is optional: if it cannot be brought up (e.g. the FOE
 	 * table allocation fails) carry on without hardware offload rather
 	 * than failing the whole device. */
-	eth->ppe = en75_ppe_init(&pdev->dev, eth->regs->ppe, eth->regs->fe);
+	eth->ppe = en75_ppe ? en75_ppe_init(&pdev->dev, eth->regs->ppe,
+					   eth->regs->fe) : ERR_PTR(-ENODEV);
 	if (IS_ERR(eth->ppe)) {
 		dev_warn(&pdev->dev, "PPE init failed (%pe), offload disabled\n",
 			 eth->ppe);

@@ -168,6 +168,7 @@ struct en75_eth {
 };
 
 /* Called in softirq context */
+extern bool en75_hw_stag;
 int en75_rx_before_recv(struct en75_eth *eth, struct sk_buff *skb,
 			enum etx_fport sport);
 
