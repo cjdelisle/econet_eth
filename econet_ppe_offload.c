@@ -23,6 +23,7 @@
 #include <linux/if_ether.h>
 #include <linux/ip.h>
 #include <linux/ipv6.h>
+#include <net/dsa.h>
 #include <linux/if_vlan.h>
 #include <linux/mutex.h>
 #include <linux/rhashtable.h>
@@ -133,7 +134,8 @@ en75_flow_tuple_from_data(struct en75_flow_tuple *t, u16 addr_type,
 
 /* Parse the ingress 5-tuple straight from a received frame (post-VLAN). */
 static void
-en75_flow_tuple_from_skb(struct en75_flow_tuple *t, struct sk_buff *skb)
+en75_flow_tuple_from_skb(struct en75_flow_tuple *t, struct sk_buff *skb,
+			 bool mtk_tag)
 {
 	const u8 *data = skb->data;
 	unsigned int l2 = ETH_HLEN;
@@ -144,6 +146,15 @@ en75_flow_tuple_from_skb(struct en75_flow_tuple *t, struct sk_buff *skb)
 	if (skb->len < ETH_HLEN)
 		return;
 	proto = ((const struct ethhdr *)data)->h_proto;
+
+	/* Behind a DSA switch the 4-byte MTK tag sits where the EtherType
+	 * would be; the real EtherType follows it. */
+	if (mtk_tag) {
+		if (skb->len < ETH_HLEN + 4)
+			return;
+		proto = *(const __be16 *)(data + ETH_HLEN + 2);
+		l2 += 4;
+	}
 	while (proto == htons(ETH_P_8021Q) || proto == htons(ETH_P_8021AD)) {
 		if (skb->len < l2 + VLAN_HLEN)
 			return;
@@ -312,6 +323,34 @@ en75_flow_set_ipv4_addr(struct en75_foe_entry *foe, struct en75_flow_data *data,
 					     data->v4.dst_addr, data->dst_port);
 }
 
+/*
+ * A flow leaving through a port of the MT7530 behind our GDM is offered on the
+ * DSA user netdev. Resolve it to the conduit and return the switch port, as
+ * mtk_flow_get_dsa_port() does, or -ENODEV if @dev is not such a port.
+ */
+static int en75_flow_get_dsa_port(struct net_device **dev)
+{
+#if IS_ENABLED(CONFIG_NET_DSA)
+	struct dsa_port *dp;
+
+	if (!*dev)
+		return -ENODEV;
+
+	dp = dsa_port_from_netdev(*dev);
+	if (IS_ERR(dp))
+		return -ENODEV;
+
+	if (dp->cpu_dp->tag_ops->proto != DSA_TAG_PROTO_MTK)
+		return -ENODEV;
+
+	*dev = dsa_port_to_conduit(dp);
+
+	return dp->index;
+#else
+	return -ENODEV;
+#endif
+}
+
 static int
 en75_ppe_offload_replace(struct en75_ppe *ppe, struct flow_cls_offload *f)
 {
@@ -323,6 +362,7 @@ en75_ppe_offload_replace(struct en75_ppe *ppe, struct flow_cls_offload *f)
 	struct en75_flow_entry *entry;
 	struct en75_foe_entry foe;
 	int offload_type = 0;
+	int dsa_port;
 	u16 addr_type = 0;
 	u8 l4proto = 0;
 	int err = 0;
@@ -421,6 +461,8 @@ en75_ppe_offload_replace(struct en75_ppe *ppe, struct flow_cls_offload *f)
 	 * on the software path: binding it would switch the packets out
 	 * the wired ports and black-hole the flow.
 	 */
+	dsa_port = en75_flow_get_dsa_port(&odev);
+
 	if (!odev || odev != ppe->ndev) {
 		ppe->diag[EN75_DIAG_REPL_REJ_ODEV]++;
 		return -EOPNOTSUPP;
@@ -441,6 +483,9 @@ en75_ppe_offload_replace(struct en75_ppe *ppe, struct flow_cls_offload *f)
 				     data.eth.h_source, data.eth.h_dest);
 	if (err)
 		return err;
+
+	if (dsa_port >= 0)
+		en75_foe_entry_set_dsa(&foe, dsa_port);
 
 	if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_PORTS)) {
 		struct flow_match_ports ports;
@@ -769,7 +814,8 @@ void en75_ppe_offload_rx_commit(struct en75_ppe *ppe, struct sk_buff *skb,
 
 	ppe->diag[EN75_DIAG_RXC_CALL]++;
 
-	en75_flow_tuple_from_skb(&key, skb);
+	en75_flow_tuple_from_skb(&key, skb,
+				 ppe->ndev && netdev_uses_dsa(ppe->ndev));
 	if (!key.l4proto) {
 		ppe->diag[EN75_DIAG_RXC_NOPARSE]++;
 		return;

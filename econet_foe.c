@@ -252,6 +252,31 @@ int en75_foe_entry_set_vlan(struct en75_foe_entry *entry, int vid)
 }
 
 /**
+ * en75_foe_entry_set_dsa() - egress a bound flow through a port of the MT7530
+ * behind the GDM.
+ *
+ * Same encoding as mtk_foe_entry_set_dsa(): the port bitmap goes into the
+ * etype slot and the engine emits it as the MTK special tag; a VLAN pushed
+ * afterwards moves into the tag's VLAN field.
+ */
+int en75_foe_entry_set_dsa(struct en75_foe_entry *entry, int port)
+{
+	struct en75_foe_mac_info *l2 = en75_foe_entry_l2(entry);
+
+	l2->w0 &= ~EN75_MAC_INFO_ETYPE;
+	l2->w0 |= FIELD_PREP(EN75_MAC_INFO_ETYPE, BIT(port));
+
+	if (!(entry->ib1 & EN75_FOE_IB1_BIND_VLAN_LAYER))
+		entry->ib1 |= FIELD_PREP(EN75_FOE_IB1_BIND_VLAN_LAYER, 1);
+	else
+		l2->w0 |= FIELD_PREP(EN75_MAC_INFO_ETYPE, BIT(8));
+
+	entry->ib1 &= ~EN75_FOE_IB1_BIND_VLAN_TAG;
+
+	return 0;
+}
+
+/**
  * en75_foe_entry_set_pppoe() - mark the rewritten L2 header as PPPoE.
  *
  * Adds the PPPoE session id and flags the entry so the engine inserts a PPPoE

@@ -182,6 +182,16 @@ static int en75_dev_open(struct net_device *dev)
 
 	netif_tx_start_all_queues(dev);
 
+	/* Behind a DSA switch, tell the GDM that frames carry the MTK special
+	 * tag (the vendor driver sets this bit in macEN7512STagEnable()).
+	 * Without it the QDMA computes TX checksums at the wrong offset and
+	 * the PPE cannot parse received frames. */
+	if (netdev_uses_dsa(dev)) {
+		u32 __iomem *vreg = (u32 __iomem *)&port->regs->vlan;
+
+		writel(readl(vreg) | BIT(0), vreg);
+	}
+
 	// TODO DSA
 	// if (netdev_uses_dsa(dev))
 	// 	airoha_fe_set(qdma->eth, REG_GDM_INGRESS_CFG(port->id),
@@ -438,12 +448,88 @@ en75_ethtool_get_rmon_stats(struct net_device *dev,
 	} while (u64_stats_fetch_retry(&port->stats.syncp, start));
 }
 
+/*
+ * Flowtable offload. A DSA user port hands TC_SETUP_FT to its conduit
+ * (dsa_user_setup_ft_block()), so the GDM netdev has to accept the block.
+ */
+static int en75_setup_tc_block_cb(enum tc_setup_type type, void *type_data,
+				  void *cb_priv)
+{
+	struct net_device *dev = cb_priv;
+	struct en75_gdm_port *port = netdev_priv(dev);
+
+	if (type != TC_SETUP_CLSFLOWER || IS_ERR_OR_NULL(port->ppe))
+		return -EOPNOTSUPP;
+
+	return en75_ppe_offload_cmd(port->ppe, type_data);
+}
+
+static int en75_setup_tc_block(struct net_device *dev,
+			       struct flow_block_offload *f)
+{
+	static LIST_HEAD(block_cb_list);
+	struct flow_block_cb *block_cb;
+	flow_setup_cb_t *cb = en75_setup_tc_block_cb;
+
+	if (f->binder_type != FLOW_BLOCK_BINDER_TYPE_CLSACT_INGRESS)
+		return -EOPNOTSUPP;
+
+	f->driver_block_list = &block_cb_list;
+
+	switch (f->command) {
+	case FLOW_BLOCK_BIND:
+		block_cb = flow_block_cb_lookup(f->block, cb, dev);
+		if (block_cb) {
+			flow_block_cb_incref(block_cb);
+			return 0;
+		}
+		block_cb = flow_block_cb_alloc(cb, dev, dev, NULL);
+		if (IS_ERR(block_cb))
+			return PTR_ERR(block_cb);
+
+		flow_block_cb_incref(block_cb);
+		flow_block_cb_add(block_cb, f);
+		list_add_tail(&block_cb->driver_list, &block_cb_list);
+		return 0;
+	case FLOW_BLOCK_UNBIND:
+		block_cb = flow_block_cb_lookup(f->block, cb, dev);
+		if (!block_cb)
+			return -ENOENT;
+
+		if (!flow_block_cb_decref(block_cb)) {
+			flow_block_cb_remove(block_cb, f);
+			list_del(&block_cb->driver_list);
+		}
+		return 0;
+	default:
+		return -EOPNOTSUPP;
+	}
+}
+
+static int en75_dev_setup_tc(struct net_device *dev, enum tc_setup_type type,
+			     void *type_data)
+{
+	struct en75_gdm_port *port = netdev_priv(dev);
+
+	if (IS_ERR_OR_NULL(port->ppe))
+		return -EOPNOTSUPP;
+
+	switch (type) {
+	case TC_SETUP_BLOCK:
+	case TC_SETUP_FT:
+		return en75_setup_tc_block(dev, type_data);
+	default:
+		return -EOPNOTSUPP;
+	}
+}
+
 static const struct net_device_ops en75_netdev_ops = {
 	.ndo_init		= en75_dev_init,
 	.ndo_open		= en75_dev_open,
 	.ndo_stop		= en75_dev_stop,
 	.ndo_change_mtu		= en75_dev_change_mtu,
 	.ndo_start_xmit		= en75_dev_xmit,
+	.ndo_setup_tc		= en75_dev_setup_tc,
 	.ndo_get_stats64        = en75_dev_get_stats64,
 	.ndo_set_mac_address	= en75_dev_set_macaddr,
 };

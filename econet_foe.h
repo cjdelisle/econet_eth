@@ -195,6 +195,7 @@ int en75_foe_entry_set_ipv6_tuple(struct en75_foe_entry *entry,
 				  __be32 *src_addr, __be16 src_port,
 				  __be32 *dest_addr, __be16 dest_port);
 int en75_foe_entry_set_vlan(struct en75_foe_entry *entry, int vid);
+int en75_foe_entry_set_dsa(struct en75_foe_entry *entry, int port);
 int en75_foe_entry_set_pppoe(struct en75_foe_entry *entry, int sid);
 u32 en75_foe_entry_hash(struct en75_foe_entry *entry);
 
