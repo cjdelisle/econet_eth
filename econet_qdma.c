@@ -17,6 +17,10 @@
 #include "qdma_regs.h"
 #include "econet_eth.h"
 
+static bool en75_threaded = true;
+module_param(en75_threaded, bool, 0444);
+MODULE_PARM_DESC(en75_threaded, "Run the QDMA NAPI instances in kernel threads");
+
 /* The non-dma part of RX packet descriptor */
 struct en75_q_rx_ent {
 	void				*buf;
@@ -1254,7 +1258,7 @@ struct en75_qdma *en75_qdma_new(struct en75_eth *eth,
 	if (!qdma->napi_dev)
 		return ERR_PTR(-ENOMEM);
 
-	qdma->napi_dev->threaded = true;
+	qdma->napi_dev->threaded = en75_threaded;
 	snprintf(qdma->napi_dev->name, sizeof qdma->napi_dev->name, "qdma%d_eth", id);
 
 	err = en75_init(eth->dev, qdma, irqs, num_irqs);
