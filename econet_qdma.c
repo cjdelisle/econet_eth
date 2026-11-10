@@ -558,9 +558,20 @@ static int en75_poll_tx_complete(struct napi_struct *napi, int budget)
 	 * the queue a completed skb came from leaves every other queue that
 	 * was stopped on ring-full stopped forever: no completion ever maps
 	 * to it, so the flows hashed there stall permanently. Wake them all;
-	 * en75_dev_xmit re-stops queues while the ring is still full. */
-	if (wake_dev)
-		netif_tx_wake_all_queues(wake_dev);
+	 * en75_dev_xmit re-stops queues while the ring is still full.
+	 * Only touch the queues that are actually stopped though: there are
+	 * EN75_NUM_CHANNELS * EN75_NUM_QUEUES of them and this runs on every
+	 * completion poll. */
+	if (wake_dev) {
+		unsigned int i;
+
+		for (i = 0; i < wake_dev->num_tx_queues; i++) {
+			struct netdev_queue *txq = netdev_get_tx_queue(wake_dev, i);
+
+			if (netif_tx_queue_stopped(txq))
+				netif_tx_wake_queue(txq);
+		}
+	}
 
 	if (done < budget && napi_complete(napi)) {
 		union en75_irq_purpose purpose = IRQ_PURPOSE(DONE, TX, id);
