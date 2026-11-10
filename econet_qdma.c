@@ -191,6 +191,8 @@ static void en75_qdma_rx_process_one(struct en75_q_rx *q, u32 cpu_i,
 	if (!skb)
 		goto return_page;
 
+	/* see set_qregs_qcfg_rx_2b_offset() */
+	skb_reserve(skb, NET_IP_ALIGN);
 	__skb_put(skb, len);
 	skb_mark_for_recycle(skb);
 	skb->ip_summed = CHECKSUM_UNNECESSARY;
@@ -1004,6 +1006,12 @@ static int en75_init_final(struct en75_qdma *qdma)
 	set_qregs_qcfg_check_done(&qcfg, true);
 	set_qregs_qcfg_tx_wb_done(&qcfg, true);
 	set_qregs_qcfg_burst_size(&qcfg, QREGS_QCFG_BURST_SIZE_128_BYTES);
+	/* Have the QDMA write received frames NET_IP_ALIGN bytes into the
+	 * buffer, so that the IP header ends up 32-bit aligned (with or
+	 * without the 4-byte MTK DSA tag). Without it every IP/TCP header
+	 * access takes an address error exception and is emulated (~44 per
+	 * forwarded packet measured on EN7528). */
+	set_qregs_qcfg_rx_2b_offset(&qcfg, NET_IP_ALIGN == 2);
 	en75_wreg(qcfg, &qdma->regs->qdma_cfg);
 
 	en75_wreg(0U, &qdma->regs->tx_int_delay);
