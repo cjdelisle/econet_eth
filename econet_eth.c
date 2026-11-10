@@ -266,12 +266,18 @@ static int en75_init_port(struct en75_eth_pvt *eth, struct device_node *np)
 	return 0;
 }
 
+/* At 1 Gbit/s 128 descriptors hold ~1.5 ms of traffic; a longer softirq
+ * delay overflows the switch buffer and it drops frames at ingress. */
+static int en75_rx_descs = 1024;
+module_param(en75_rx_descs, int, 0444);
+MODULE_PARM_DESC(en75_rx_descs, "RX descriptors per QDMA ring");
+
 static void en75_prepare_qdma_cfg(struct en75_qdma_cfg *cfg,
 				  const struct en75_soc_data *soc)
 {
 	memset(cfg, 0, sizeof(*cfg));
 	for (int i = 0; i < QDMA_NUM_CHAINS; i++)
-		cfg->num_rx_descs[i] = 128;
+		cfg->num_rx_descs[i] = clamp(en75_rx_descs, 64, 4096);
 	for (int i = 0; i < QDMA_NUM_CHAINS; i++)
 		cfg->num_tx_descs[i] = 128;
 	for (int i = 0; i < QDMA_NUM_TX_DONE; i++)
