@@ -17,6 +17,10 @@
 #include "qdma_regs.h"
 #include "econet_eth.h"
 
+static bool en75_threaded = true;
+module_param(en75_threaded, bool, 0444);
+MODULE_PARM_DESC(en75_threaded, "Run the QDMA NAPI instances in kernel threads");
+
 /* The non-dma part of RX packet descriptor */
 struct en75_q_rx_ent {
 	void				*buf;
@@ -191,6 +195,8 @@ static void en75_qdma_rx_process_one(struct en75_q_rx *q, u32 cpu_i,
 	if (!skb)
 		goto return_page;
 
+	/* see set_qregs_qcfg_rx_2b_offset() */
+	skb_reserve(skb, NET_IP_ALIGN);
 	__skb_put(skb, len);
 	skb_mark_for_recycle(skb);
 	skb->ip_summed = CHECKSUM_UNNECESSARY;
@@ -556,9 +562,20 @@ static int en75_poll_tx_complete(struct napi_struct *napi, int budget)
 	 * the queue a completed skb came from leaves every other queue that
 	 * was stopped on ring-full stopped forever: no completion ever maps
 	 * to it, so the flows hashed there stall permanently. Wake them all;
-	 * en75_dev_xmit re-stops queues while the ring is still full. */
-	if (wake_dev)
-		netif_tx_wake_all_queues(wake_dev);
+	 * en75_dev_xmit re-stops queues while the ring is still full.
+	 * Only touch the queues that are actually stopped though: there are
+	 * EN75_NUM_CHANNELS * EN75_NUM_QUEUES of them and this runs on every
+	 * completion poll. */
+	if (wake_dev) {
+		unsigned int i;
+
+		for (i = 0; i < wake_dev->num_tx_queues; i++) {
+			struct netdev_queue *txq = netdev_get_tx_queue(wake_dev, i);
+
+			if (netif_tx_queue_stopped(txq))
+				netif_tx_wake_queue(txq);
+		}
+	}
 
 	if (done < budget && napi_complete(napi)) {
 		union en75_irq_purpose purpose = IRQ_PURPOSE(DONE, TX, id);
@@ -1004,6 +1021,12 @@ static int en75_init_final(struct en75_qdma *qdma)
 	set_qregs_qcfg_check_done(&qcfg, true);
 	set_qregs_qcfg_tx_wb_done(&qcfg, true);
 	set_qregs_qcfg_burst_size(&qcfg, QREGS_QCFG_BURST_SIZE_128_BYTES);
+	/* Have the QDMA write received frames NET_IP_ALIGN bytes into the
+	 * buffer, so that the IP header ends up 32-bit aligned (with or
+	 * without the 4-byte MTK DSA tag). Without it every IP/TCP header
+	 * access takes an address error exception and is emulated (~44 per
+	 * forwarded packet measured on EN7528). */
+	set_qregs_qcfg_rx_2b_offset(&qcfg, NET_IP_ALIGN == 2);
 	en75_wreg(qcfg, &qdma->regs->qdma_cfg);
 
 	en75_wreg(0U, &qdma->regs->tx_int_delay);
@@ -1235,7 +1258,7 @@ struct en75_qdma *en75_qdma_new(struct en75_eth *eth,
 	if (!qdma->napi_dev)
 		return ERR_PTR(-ENOMEM);
 
-	qdma->napi_dev->threaded = true;
+	qdma->napi_dev->threaded = en75_threaded;
 	snprintf(qdma->napi_dev->name, sizeof qdma->napi_dev->name, "qdma%d_eth", id);
 
 	err = en75_init(eth->dev, qdma, irqs, num_irqs);
