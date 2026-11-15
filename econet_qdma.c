@@ -1141,16 +1141,39 @@ int en75_qdma_use(struct en75_qdma *qdma)
 	if (qdma->users++ > 0)
 		return 0;
 
-	qcfg = en75_rreg(&qdma->regs->qdma_cfg);
-	set_qregs_qcfg_rx_dma_en(&qcfg, true);
-	set_qregs_qcfg_tx_dma_en(&qcfg, true);
-	en75_wreg(qcfg, &qdma->regs->qdma_cfg);
-
+	/* The interrupt handler masks a ring's interrupt and schedules its
+	 * NAPI, and only the NAPI poll unmasks it again. If the interrupt
+	 * comes while NAPI is disabled, scheduling does nothing and the
+	 * interrupt stays masked for good: the ring is never serviced
+	 * again, it fills up and the GDM drops everything after that.
+	 *
+	 * So enable NAPI before DMA. Frames that queued up in the GDM while
+	 * DMA was off land as soon as it is on, and their interrupt must
+	 * find NAPI ready.
+	 */
 	for (i = 0; i < ARRAY_SIZE(qdma->q_rx); i++)
 		napi_enable(&qdma->q_rx[i].napi);
 
 	for (i = 0; i < ARRAY_SIZE(qdma->q_tx_done); i++)
 		napi_enable(&qdma->q_tx_done[i].napi);
+
+	qcfg = en75_rreg(&qdma->regs->qdma_cfg);
+	set_qregs_qcfg_rx_dma_en(&qcfg, true);
+	set_qregs_qcfg_tx_dma_en(&qcfg, true);
+	en75_wreg(qcfg, &qdma->regs->qdma_cfg);
+
+	/* An interrupt can also come while NAPI is being disabled, when the
+	 * device is closed, and stay masked. Poll every ring once: that
+	 * handles anything already waiting, and each poll unmasks its
+	 * interrupt when it completes.
+	 */
+	local_bh_disable();
+	for (i = 0; i < ARRAY_SIZE(qdma->q_rx); i++)
+		napi_schedule(&qdma->q_rx[i].napi);
+
+	for (i = 0; i < ARRAY_SIZE(qdma->q_tx_done); i++)
+		napi_schedule(&qdma->q_tx_done[i].napi);
+	local_bh_enable();
 
 	return 0;
 }
