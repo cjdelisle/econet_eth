@@ -671,8 +671,8 @@ en751221_trgmii_pair_setup(struct mt7530_priv *ext, int ext_port,
 				  RD_TAP_MASK);
 	}
 
-	en751221_trgmii_calibrate_direction(ondie, ext, default_taps_ondie);
-	en751221_trgmii_calibrate_direction(ext, ondie, default_taps_ext);
+	en751221_trgmii_calibrate_direction(ondie, ext, default_taps_ext);
+	en751221_trgmii_calibrate_direction(ext, ondie, default_taps_ondie);
 
 	dev_info(ondie->dev, "TRGMII inter-switch link initialized\n");
 }
@@ -1664,13 +1664,36 @@ mt753x_cpu_port_enable(struct dsa_switch *ds, int port)
 			   PCR_PORT_VLAN_MASK, MT7530_PORT_FALLBACK_MODE);
 }
 
+/**
+ * mt753x_upstream_port_index - get the index of the upstream port.
+ *
+ * If the CPU port is local then this is the upstream port, but in the case of
+ * hierarchy the CPU port may be on another switch and the upstream port is
+ * then the DSA port pointing toward that CPU port. Note that
+ * dsa_switch_upstream_port() is not reliable because the conduit for a given
+ * port can be customized.
+ */
+static int
+mt753x_upstream_port_index(struct dsa_port *dp)
+{
+	struct dsa_port *cpu_dp = dp->cpu_dp;
+
+	/* Early port_enable on CPU port happens before cpu_dp is set. */
+	if (!cpu_dp)
+		return dsa_switch_upstream_port(dp->ds);
+
+	return dsa_towards_port(dp->ds, cpu_dp->ds->index, cpu_dp->index);
+}
+
 static int
 mt7530_port_enable(struct dsa_switch *ds, int port,
 		   struct phy_device *phy)
 {
-	int upstream_pt = dsa_switch_upstream_port(ds);
 	struct dsa_port *dp = dsa_to_port(ds, port);
 	struct mt7530_priv *priv = ds->priv;
+	int upstream_pt;
+
+	upstream_pt = mt753x_upstream_port_index(dp);
 
 	mutex_lock(&priv->reg_mutex);
 
@@ -1799,9 +1822,8 @@ static void mt7530_update_port_member(struct mt7530_priv *priv, int port,
 				      bool join) __must_hold(&priv->reg_mutex)
 {
 	struct dsa_port *dp = dsa_to_port(priv->ds, port), *other_dp;
+	u32 port_bitmap = BIT(mt753x_upstream_port_index(dp));
 	struct mt7530_port *p = &priv->ports[port], *other_p;
-	struct dsa_port *cpu_dp = dp->cpu_dp;
-	u32 port_bitmap = BIT(cpu_dp->index);
 	int other_port;
 	bool isolated;
 
@@ -2267,7 +2289,6 @@ mt7530_port_vlan_filtering(struct dsa_switch *ds, int port, bool vlan_filtering,
 			   struct netlink_ext_ack *extack)
 {
 	struct dsa_port *dp = dsa_to_port(ds, port);
-	struct dsa_port *cpu_dp = dp->cpu_dp;
 
 	if (vlan_filtering) {
 		/* The port is being kept as VLAN-unaware port when bridge is
@@ -2276,7 +2297,7 @@ mt7530_port_vlan_filtering(struct dsa_switch *ds, int port, bool vlan_filtering,
 		 * for becoming a VLAN-aware port.
 		 */
 		mt7530_port_set_vlan_aware(ds, port);
-		mt7530_port_set_vlan_aware(ds, cpu_dp->index);
+		mt7530_port_set_vlan_aware(ds, mt753x_upstream_port_index(dp));
 	} else {
 		mt7530_port_set_vlan_unaware(ds, port);
 	}
@@ -2308,7 +2329,7 @@ mt7530_hw_vlan_add(struct mt7530_priv *priv,
 	 * that VLAN tags would be appended after hardware special tag used as
 	 * DSA tag.
 	 */
-	if (dsa_port_is_cpu(dp))
+	if (dp->index == mt753x_upstream_port_index(dp))
 		val = MT7530_VLAN_EGRESS_STACK;
 	else if (entry->untagged)
 		val = MT7530_VLAN_EGRESS_UNTAG;
@@ -2733,11 +2754,6 @@ mt7530_setup_irq(struct mt7530_priv *priv)
 		return irq ? : -EINVAL;
 	}
 
-	/* This register must be set for MT7530 to properly fire interrupts */
-	if (priv->id == ID_MT7530 || priv->id == ID_MT7621)
-		regmap_set_bits(priv->regmap, MT7530_TOP_SIG_CTRL,
-				TOP_SIG_CTRL_NORMAL);
-
 	ret = devm_regmap_add_irq_chip_fwnode(dev, dev_fwnode(dev),
 					      priv->regmap, irq,
 					      IRQF_ONESHOT,
@@ -2780,6 +2796,10 @@ mt7530_setup_mdio(struct mt7530_priv *priv)
 	if (priv->child_bus)
 		return 0;
 
+	ret = mt7530_setup_irq(priv);
+	if (ret)
+		return ret;
+
 	mnp = of_get_child_by_name(np, "mdio");
 
 	if (mnp && !of_device_is_available(mnp))
@@ -2803,6 +2823,9 @@ mt7530_setup_mdio(struct mt7530_priv *priv)
 	bus->write_c45 = mt753x_phy_write_c45;
 	bus->parent = dev;
 	bus->phy_mask = ~ds->phys_mii_mask;
+
+	if (priv->irq_domain && !mnp)
+		mt7530_setup_mdio_irq(priv);
 
 	priv->child_bus = bus;
 
@@ -2922,6 +2945,10 @@ mt7530_setup(struct dsa_switch *ds)
 			   MT7530_CHG_TRAP | MT7530_PHY_INDIRECT_ACCESS,
 			   MT7530_CHG_TRAP);
 
+	/* This register must be set for MT7530 to properly fire interrupts */
+	regmap_set_bits(priv->regmap, MT7530_TOP_SIG_CTRL,
+			TOP_SIG_CTRL_NORMAL);
+
 	/* EN751221 MCM starts on the wrong frequency */
 	if (priv->id == ID_EN751221_EXT)
 		regmap_update_bits(priv->regmap, MT753X_MTRAP,
@@ -2931,7 +2958,8 @@ mt7530_setup(struct dsa_switch *ds)
 	if ((val & MT7530_XTAL_MASK) == MT7530_XTAL_40MHZ)
 		mt7530_pll_setup(priv);
 
-	mt753x_trap_frames(priv);
+	if (!priv->is_passthrough)
+		mt753x_trap_frames(priv);
 
 	/* Enable and reset MIB counters */
 	mt7530_mib_reset(ds);
@@ -3048,7 +3076,8 @@ mt7531_setup_common(struct dsa_switch *ds)
 	ds->ageing_time_min = 2 * 1000;
 	ds->ageing_time_max = (AGE_CNT_MAX + 1) * (AGE_UNIT_MAX + 1) * 1000;
 
-	mt753x_trap_frames(priv);
+	if (!priv->is_passthrough)
+		mt753x_trap_frames(priv);
 
 	/* Enable and reset MIB counters */
 	mt7530_mib_reset(ds);
@@ -3688,10 +3717,6 @@ mt753x_setup(struct dsa_switch *ds)
 	if (ret)
 		return ret;
 
-	ret = mt7530_setup_irq(priv);
-	if (ret)
-		return ret;
-
 	/*
 	 * This must be called before mt753x_setup() returns because the DSA
 	 * core synchronously sets up ports and expects PHYs to be operational.
@@ -3699,9 +3724,6 @@ mt753x_setup(struct dsa_switch *ds)
 	ret = mt7530_setup_mdio(priv);
 	if (ret)
 		return ret;
-
-	if (priv->irq_domain && ds->user_mii_bus)
-		mt7530_setup_mdio_irq(priv);
 
 	/* Initialise the PCS devices */
 	for (i = 0; i < priv->ds->num_ports; i++) {
@@ -3800,11 +3822,14 @@ mt753x_conduit_state_change(struct dsa_switch *ds,
 
 	/* Set the CPU port to trap frames to for MT7530. Trapped frames will be
 	 * forwarded to the numerically smallest CPU port whose conduit
-	 * interface is up. NOTE: "CPU port" can also mean an upstream DSA link.
+	 * interface is up. On EN7581, trapped BPDUs do not reach the CPU port
+	 * without this, even with the CPU port bitmap set. AN7583 is set up
+	 * the same way as EN7581.
 	 */
 	if (priv->id != ID_MT7530 && priv->id != ID_MT7621 &&
-	    priv->id != ID_EN7528 && priv->id != ID_EN751221 &&
-	    priv->id != ID_EN751221_EXT)
+	    priv->id != ID_EN7528 &&
+	    priv->id != ID_EN7581 && priv->id != ID_AN7583 &&
+	    priv->id != ID_EN751221 && priv->id != ID_EN751221_EXT)
 		return;
 
 	mask = BIT(cpu_dp->index);
@@ -3897,6 +3922,15 @@ static int mt7988_setup(struct dsa_switch *ds)
 				   AN7583_CSR_PHY_CORE_REG_CLK_SEL |
 				   FIELD_PREP(AN7583_CSR_ETHER_AFE_PWD, 0));
 
+	/*
+	 * EN751221 is an MT7530 but it is MMIO so setup is largely the same
+	 * as the MMIO MT7531, but CHG_TRAP and INDIRECT_ACCESS must be set.
+	 */
+	if (priv->id == ID_EN751221)
+		regmap_update_bits(priv->regmap, MT753X_MTRAP,
+				   MT7530_CHG_TRAP | MT7530_PHY_INDIRECT_ACCESS,
+				   MT7530_CHG_TRAP);
+
 	/* Reset the switch PHYs */
 	regmap_write(priv->regmap, MT7530_SYS_CTRL, SYS_CTRL_PHY_RST);
 
@@ -3907,8 +3941,9 @@ static int mt7988_setup(struct dsa_switch *ds)
 static int mt753x_check_passthrough(struct device *dev)
 {
 	struct device_node *ports, *port;
-	int passthrough_ports = 0;
+	int ethernet_ports = 0;
 	int enabled_ports = 0;
+	int link_ports = 0;
 
 	ports = of_get_child_by_name(dev->of_node, "ports");
 	if (!ports)
@@ -3920,20 +3955,23 @@ static int mt753x_check_passthrough(struct device *dev)
 	}
 
 	for_each_available_child_of_node(ports, port) {
-		struct device_node *link;
+		struct device_node *pt_node;
 
 		enabled_ports++;
 
-		link = of_parse_phandle(port, "ethernet", 0);
-		if (!link)
-			link = of_parse_phandle(port, "link", 0);
+		pt_node = of_parse_phandle(port, "ethernet", 0);
 
-		if (!link)
+		if (pt_node) {
+			ethernet_ports++;
+			of_node_put(pt_node);
 			continue;
-
-		of_node_put(link);
-
-		passthrough_ports++;
+		}
+	
+		pt_node = of_parse_phandle(port, "link", 0);
+		if (pt_node) {
+			link_ports++;
+			of_node_put(pt_node);
+		}
 	}
 
 	of_node_put(ports);
@@ -3942,16 +3980,8 @@ static int mt753x_check_passthrough(struct device *dev)
 	 * A switch is considered passthrough if exactly two available
 	 * ports have an "ethernet" or "link" phandle.
 	 */
-	if (passthrough_ports > 2 ||
-	    (passthrough_ports == 2 && enabled_ports != 2)
-	) {
-		dev_err(dev, "Only two ports allowed in passthrough mode\n");
-		return -EINVAL;
-	}
-
-	return passthrough_ports == 2;
+	return link_ports == 1 && ethernet_ports == 1 && enabled_ports == 2;
 }
-
 
 /* No manipulation of forwarding rules allowed in passthrough mode */
 static const struct dsa_switch_ops mt7530_passthrough_switch_ops = {
@@ -3993,8 +4023,8 @@ static const struct dsa_switch_ops mt7530_passthrough_switch_ops = {
 	.set_mac_eee            = mt753x_set_mac_eee,
 	.conduit_state_change   = mt753x_conduit_state_change,
 	.port_setup_tc		= mt753x_passthrough_setup_tc,
-	// .port_hsr_join		= dsa_port_simple_hsr_join,
-	// .port_hsr_leave		= dsa_port_simple_hsr_leave,
+	.port_hsr_join		= dsa_port_simple_hsr_join,
+	.port_hsr_leave		= dsa_port_simple_hsr_leave,
 };
 
 static const struct dsa_switch_ops mt7530_switch_ops = {
@@ -4036,8 +4066,8 @@ static const struct dsa_switch_ops mt7530_switch_ops = {
 	.set_mac_eee		= mt753x_set_mac_eee,
 	.conduit_state_change	= mt753x_conduit_state_change,
 	.port_setup_tc		= mt753x_setup_tc,
-	// .port_hsr_join		= dsa_port_simple_hsr_join,
-	// .port_hsr_leave		= dsa_port_simple_hsr_leave,
+	.port_hsr_join		= dsa_port_simple_hsr_join,
+	.port_hsr_leave		= dsa_port_simple_hsr_leave,
 };
 
 static const struct phylink_mac_ops mt753x_phylink_mac_ops = {
@@ -4148,6 +4178,15 @@ const struct mt753x_info mt753x_table[] = {
 };
 EXPORT_SYMBOL_GPL(mt753x_table);
 
+/*
+ * An MMIO switch can have another MDIO switch connected to its
+ * MDIO interface and in that case, actions on the MDIO switch will call
+ * through to mt7531_ind_c(22|45)_phy_(read|write) making a lock
+ * dependency.
+ */
+static struct lock_class_key mt7530_mmio_mutex_key;
+static struct lock_class_key mt7530_mdio_mutex_key;
+
 int
 mt7530_probe_common(struct mt7530_priv *priv)
 {
@@ -4186,6 +4225,11 @@ mt7530_probe_common(struct mt7530_priv *priv)
 	mutex_init(&priv->reg_mutex);
 	spin_lock_init(&priv->stats_lock);
 	INIT_DELAYED_WORK(&priv->stats_work, mt7530_stats_poll);
+
+	if (priv->bus)
+		lockdep_set_class(&priv->reg_mutex, &mt7530_mdio_mutex_key);
+	else
+		lockdep_set_class(&priv->reg_mutex, &mt7530_mmio_mutex_key);
 
 	dev_set_drvdata(dev, priv);
 
